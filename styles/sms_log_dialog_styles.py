@@ -386,6 +386,30 @@ class SmsLogDialogStyles:
             }
         """
     
+    # สไตล์ช่องสำหรับ Search Phone Number&Message และปุ่ม Search
+    @staticmethod
+    def get_search_button_style():
+        """Search Button Style – ปุ่มค้นหาโทนแดง"""
+        return """
+            QPushButton {
+                font-size: 14px;
+                padding: 6px 12px;
+                border: 2px solid #dc3545;
+                border-radius: 6px;
+                background-color: white;
+                color: #dc3545;
+            }
+            QPushButton:hover {
+                background-color: #fff5f5;
+                border-color: #c82333;
+            }
+            QPushButton:pressed {
+                background-color: #e53e3e;
+                padding-top: 7px;
+            }
+        """
+
+
     @staticmethod
     def get_search_button_style():
         """Search Button Style - ปุ่มค้นหาโทนแดง"""

@@ -28,14 +28,6 @@ try:
 except:
     LOG_DIR = Path(__file__).parent / "log"
 
-# def ensure_dir_for_file(filepath: Path):
-#         """สร้างโฟลเดอร์ให้ filepath ถ้ายังไม่มี"""
-#         folder = filepath.parent
-#         if not folder.exists():
-#             folder.mkdir(parents=True, exist_ok=True)
-
-#         return filepath
-
 class SmsLogDialog(QDialog):
     """หน้าต่างประวัติ SMS ที่เน้นตารางเป็นหลัก (แบบง่าย) - โทนสีแดงทางการ"""
     send_sms_requested = pyqtSignal(str, str)
@@ -52,6 +44,11 @@ class SmsLogDialog(QDialog):
         self.setWindowTitle("📱 SMS History Manager | ประวัติข้อความ")
         self.resize(1000, 700)
         
+        # สร้าง main layout
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setSpacing(8)
+        self.main_layout.setContentsMargins(15, 15, 15, 15)
+
         # สร้าง UI และเชื่อมต่อ signals
         self.setup_simplified_ui()
         self.setup_connections()
@@ -66,21 +63,118 @@ class SmsLogDialog(QDialog):
     # ==================== 2. UI SETUP ====================
     def setup_simplified_ui(self):
         """ตั้งค่า UI แบบง่าย เหลือแค่การเลือกรายการล่าสุดหรือเก่ากว่า"""
-        layout = QVBoxLayout(self)
-        layout.setSpacing(8)
-        layout.setContentsMargins(15, 15, 15, 15)
+        # ==================== SEARCH SECTION (ส่วนบนสุด) ====================
+        search_section = self.create_search_section()
+        self.main_layout.addWidget(search_section)
         
-        # ส่วนควบคุมแบบง่าย
+        # ==================== CONTROL SECTION ====================
         control_section = self.create_simple_control_section()
-        layout.addWidget(control_section)
+        self.main_layout.addWidget(control_section)
         
-        # Table section (ขยายใหญ่สุด)
+        # ==================== TABLE SECTION ====================
         table_section = self.create_maximized_table_section()
-        layout.addWidget(table_section, stretch=20)
+        self.main_layout.addWidget(table_section, stretch=20)
         
-        # Footer section
+        # ==================== FOOTER SECTION ====================
         footer = self.create_footer_section()
-        layout.addWidget(footer)
+        self.main_layout.addWidget(footer)
+
+    def create_search_section(self):
+        """สร้าง section สำหรับค้นหาเบอร์/ข้อความ - แก้ไขให้แสดงผลถูกต้อง"""
+        search_widget = QWidget()
+        search_widget.setMinimumHeight(80)  # เพิ่มความสูงขั้นต่ำ
+        search_widget.setMaximumHeight(100)  # และความสูงสูงสุด
+        
+        hlayout = QHBoxLayout(search_widget)
+        hlayout.setSpacing(15)
+        hlayout.setContentsMargins(20, 15, 20, 15)  # เพิ่ม margin
+
+        # Search label
+        search_label = QLabel("🔍 ค้นหา:")
+        search_label.setFixedWidth(110)  # เพิ่มความกว้าง
+        search_label.setStyleSheet("""
+            QLabel {
+                font-size: 15px;
+                font-weight: bold;
+                color: #721c24;
+                padding: 5px;
+            }
+        """)
+        hlayout.addWidget(search_label)
+
+        # Search input
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("ค้นหาจากเบอร์โทรศัพท์หรือข้อความ...")
+        self.search_input.setMinimumHeight(40)  # เพิ่มความสูง
+        self.search_input.setMaximumHeight(45)
+        self.search_input.textChanged.connect(self.apply_search_filter)
+        hlayout.addWidget(self.search_input)
+
+        # Search button
+        self.search_button = QPushButton("🔍 Search")
+        self.search_button.setFixedWidth(130)  # เพิ่มความกว้าง
+        self.search_button.setMinimumHeight(40)  # เพิ่มความสูง
+        self.search_button.setMaximumHeight(45)
+        self.search_button.clicked.connect(self.apply_search_filter)
+        hlayout.addWidget(self.search_button)
+
+        # Clear search button
+        self.clear_search_button = QPushButton("✖ Clear")
+        self.clear_search_button.setFixedWidth(90)  # เพิ่มความกว้าง
+        self.clear_search_button.setMinimumHeight(40)  # เพิ่มความสูง
+        self.clear_search_button.setMaximumHeight(45)
+        self.clear_search_button.clicked.connect(self.clear_search)
+        hlayout.addWidget(self.clear_search_button)
+
+        # จัดเก็บ reference สำหรับ styling
+        self.search_widget = search_widget
+        self.search_label = search_label
+
+        return search_widget
+
+    def apply_search_filter(self):
+        """กรองตารางตามข้อความในช่องค้นหา"""
+        query = self.search_input.text().strip().lower()
+        visible_count = 0
+        
+        for row in range(self.table.rowCount()):
+            # ดึงข้อมูลจากแต่ละคอลัมน์
+            phone_item = self.table.item(row, 2)
+            msg_item = self.table.item(row, 3)
+            
+            if phone_item and msg_item:
+                phone = phone_item.text().lower()
+                msg = msg_item.text().lower()
+                
+                # ตรวจสอบว่าควรแสดงแถวนี้หรือไม่
+                show = not query or (query in phone) or (query in msg)
+                self.table.setRowHidden(row, not show)
+                
+                if show:
+                    visible_count += 1
+            else:
+                # ถ้าไม่มีข้อมูลให้ซ่อนแถว
+                self.table.setRowHidden(row, True)
+        
+        # อัพเดทสถิติ
+        self.update_status_label(visible_count)
+        
+        # แสดงข้อความค้นหา
+        if query:
+            print(f"🔍 Search for '{query}': Found {visible_count} results")
+
+    def clear_search(self):
+        """ล้างการค้นหาและแสดงข้อมูลทั้งหมด"""
+        self.search_input.clear()
+        
+        # แสดงแถวทั้งหมด
+        for row in range(self.table.rowCount()):
+            self.table.setRowHidden(row, False)
+        
+        # อัพเดทสถิติ
+        self.update_status_label()
+        
+        print("🗑️ Search cleared - showing all data")
 
     def create_simple_control_section(self):
         """สร้างส่วนควบคุมแบบง่าย"""
@@ -254,21 +348,36 @@ class SmsLogDialog(QDialog):
         except:
             return None
 
-    def update_status_label(self):
+    def update_status_label(self, custom_count=None):
         """อัพเดทข้อความสถานะ"""
         try:
-            total_items = self.table.rowCount()
-            # ตรวจสอบว่าเป็นข้อความ "ไม่มีข้อมูล" หรือไม่
-            if total_items == 1:
-                first_item = self.table.item(0, 0)
-                if first_item and ("ไม่มี" in first_item.text() or "🔍" in first_item.text()):
-                    total_items = 0
+            if custom_count is not None:
+                # ใช้จำนวนที่กำหนด (สำหรับการค้นหา)
+                total_items = custom_count
+            else:
+                # นับจำนวนแถวที่แสดงอยู่
+                total_items = 0
+                for row in range(self.table.rowCount()):
+                    if not self.table.isRowHidden(row):
+                        total_items += 1
+                
+                # ตรวจสอบว่าเป็นข้อความ "ไม่มีข้อมูล" หรือไม่
+                if total_items == 1:
+                    first_item = self.table.item(0, 0)
+                    if first_item and ("ไม่มี" in first_item.text() or "🔍" in first_item.text()):
+                        total_items = 0
             
-            self.status_label.setText(f"📊 รายการทั้งหมด: {total_items}")
+            # อัพเดทข้อความ
+            search_query = self.search_input.text().strip()
+            if search_query:
+                self.status_label.setText(f"📊 ผลการค้นหา '{search_query}': {total_items} รายการ")
+            else:
+                self.status_label.setText(f"📊 รายการทั้งหมด: {total_items}")
+                
         except Exception as e:
             print(f"Error updating status label: {e}")
             self.status_label.setText("📊 รายการทั้งหมด: 0")
-
+            
     # ==================== 4. DATA LOADING ====================
     def load_log(self):
         """โหลดข้อมูล SMS จากไฟล์ - รองรับรูปแบบใหม่"""
