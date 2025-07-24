@@ -10,7 +10,7 @@ import re
 import os
 import csv
 from datetime import datetime
-from sms_log import log_sms_inbox
+from services.sms_log import log_sms_inbox
 
 # ==================== IMPORT NEW STYLES ====================
 from styles import SmsRealtimeMonitorStyles
@@ -342,7 +342,7 @@ class SmsRealtimeMonitor(QDialog):
     def save_to_csv(self, sender, message, datetime_str):
         """บันทึก SMS ลง CSV file - ใช้ sms_log module ที่ปรับปรุงแล้ว"""
         try:
-            from sms_log import log_sms_inbox
+            from services.sms_log import log_sms_inbox
             success = log_sms_inbox(sender, message, status='รับเข้า (real-time)')
             
             if success:

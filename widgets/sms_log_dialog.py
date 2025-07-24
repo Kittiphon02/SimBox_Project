@@ -16,7 +16,7 @@ import portalocker
 def get_log_directory_from_settings():
     """ดึง log directory จาก settings.json"""
     try:
-        from sms_log import get_log_directory
+        from services.sms_log import get_log_directory
         return get_log_directory()
     except Exception as e:
         print(f"Error getting log directory: {e}")
@@ -276,7 +276,7 @@ class SmsLogDialog(QDialog):
         
         # ใช้ sms_log module เพื่อดึง path ที่ถูกต้อง
         try:
-            from sms_log import get_log_file_path
+            from services.sms_log import get_log_file_path
             filename = "sms_sent_log.csv" if idx != 1 else "sms_inbox_log.csv"
             log_path = get_log_file_path(filename)
             
