@@ -17,12 +17,15 @@ from managers import (
 from services import load_sim_data, SerialMonitorThread
 from widgets import SimTableWidget
 from styles import MainWindowStyles
+from windows.at_command_helper import ATCommandHelperDialog
 
 class SimInfoWindow(QMainWindow):
     """หน้าต่างหลักของโปรแกรม SIM Management System"""
     
     def __init__(self):
         super().__init__()
+        
+        self.setup_keyboard_shortcuts()
         
         # ==================== 1. INITIALIZATION ====================
         self.init_variables()
@@ -229,6 +232,7 @@ class SimInfoWindow(QMainWindow):
 
         # ส่วนบน: ป้อนคำสั่ง AT
         input_layout = QHBoxLayout()
+        input_layout.setSpacing(5)
         input_layout.addWidget(QLabel("AT Command:"))
 
         self.at_combo_main = QComboBox()
@@ -240,11 +244,12 @@ class SimInfoWindow(QMainWindow):
         self.btn_del_cmd.setFixedWidth(100)
         input_layout.addWidget(self.btn_del_cmd)
 
-        self.input_cmd_main = QTextEdit()
-        self.input_cmd_main.setFixedHeight(40)
-        input_layout.addWidget(self.input_cmd_main)
+        self.btn_help = QPushButton("Help")
+        self.btn_help.setFixedWidth(70)
+        input_layout.addWidget(self.btn_help)
 
-        self.at_combo_main.currentTextChanged.connect(self.input_cmd_main.setPlainText)
+        # เพิ่ม stretch เพื่อดันเนื้อหาไปทางซ้าย
+        input_layout.addStretch()
 
         # โหลดประวัติคำสั่ง AT
         self.at_command_manager.load_command_history(self.at_combo_main)
@@ -329,6 +334,14 @@ class SimInfoWindow(QMainWindow):
         self.main_layout.addSpacing(16)
         self.at_group = at_group
 
+    def show_at_command_helper(self):
+        """แสดงหน้าต่าง AT Command Helper"""
+        try:
+            helper_dialog = ATCommandHelperDialog(self)
+            helper_dialog.exec_()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Cannot open AT Command Helper: {e}")
+
     def create_sim_table(self):
         """สร้างตารางแสดงข้อมูลซิม"""
         self.table = SimTableWidget(self.sims, history_callback=self.show_sms_log_for_phone)
@@ -356,11 +369,11 @@ class SimInfoWindow(QMainWindow):
         self.at_group.setStyleSheet(MainWindowStyles.get_at_group_style())
         
         self.at_combo_main.setStyleSheet(MainWindowStyles.get_at_combo_style())
-        self.input_cmd_main.setStyleSheet(MainWindowStyles.get_input_cmd_style())
         self.input_sms_main.setStyleSheet(MainWindowStyles.get_sms_input_style())
         self.input_phone_main.setStyleSheet(MainWindowStyles.get_phone_input_style())
         
         self.btn_del_cmd.setStyleSheet(MainWindowStyles.get_delete_button_style())
+        self.btn_help.setStyleSheet(MainWindowStyles.get_help_button_style())
         self.btn_send_at.setStyleSheet(MainWindowStyles.get_send_at_button_style())
         self.btn_show_sms.setStyleSheet(MainWindowStyles.get_show_sms_button_style())
         self.btn_send_sms_main.setStyleSheet(MainWindowStyles.get_send_sms_button_style())
@@ -388,12 +401,50 @@ class SimInfoWindow(QMainWindow):
         # AT Command management
         self.btn_send_at.clicked.connect(self.send_at_command_main)
         self.btn_del_cmd.clicked.connect(self.remove_at_command_main)
+        self.btn_help.clicked.connect(self.show_at_command_helper)
         
         # SMS management
         self.btn_send_sms_main.clicked.connect(self.send_sms_main)
         self.btn_show_sms.clicked.connect(self.sms_inbox_manager.show_inbox_sms)
         self.btn_clear_sms_main.clicked.connect(self.sms_inbox_manager.clear_all_sms)
+        
+        # ========== แก้ไขส่วนนี้ ==========
+        # วิธีที่ 1: ใช้ returnPressed (ปัญหาอาจมาจากนี่)
+        try:
+            # ลองวิธีนี้ก่อน
+            self.at_combo_main.lineEdit().returnPressed.connect(self.send_at_command_main)
+            print("✅ Method 1: returnPressed connected")
+        except Exception as e:
+            print(f"❌ Method 1 failed: {e}")
 
+        # เพิ่มการเชื่อมต่อสำหรับ Phone input
+        try:
+            self.input_phone_main.returnPressed.connect(self.send_sms_main)
+            print("✅ Phone input Enter key connected")
+        except Exception as e:
+            print(f"❌ Phone input connection failed: {e}")
+
+    def setup_keyboard_shortcuts(self):
+        """ตั้งค่า keyboard shortcuts"""
+        from PyQt5.QtWidgets import QShortcut
+        from PyQt5.QtGui import QKeySequence
+        
+        # Ctrl+Enter สำหรับส่ง AT Command
+        at_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        at_shortcut.activated.connect(self.send_at_command_main)
+        
+        # F1 สำหรับ Help
+        help_shortcut = QShortcut(QKeySequence("F1"), self)
+        help_shortcut.activated.connect(self.show_at_command_helper)
+        
+        # F5 สำหรับ Refresh
+        refresh_shortcut = QShortcut(QKeySequence("F5"), self)
+        refresh_shortcut.activated.connect(self.refresh_ports)
+        
+        # Ctrl+L สำหรับ Clear Response
+        clear_shortcut = QShortcut(QKeySequence("Ctrl+L"), self)
+        clear_shortcut.activated.connect(self.clear_at_displays)
+        
     # ==================== 3. APPLICATION INITIALIZATION ====================
     def initialize_application(self):
         """เริ่มต้นการทำงานของโปรแกรม"""
@@ -475,7 +526,7 @@ class SimInfoWindow(QMainWindow):
             QMessageBox.warning(self, "Notice", "No connection found with Serial")
             return
         
-        cmd = self.input_cmd_main.toPlainText().strip()
+        cmd = self.at_combo_main.currentText().strip()
         if not cmd:
             QMessageBox.warning(self, "Notice", "Please fill in the order AT")
             return
@@ -504,7 +555,7 @@ class SimInfoWindow(QMainWindow):
 
     def remove_at_command_main(self):
         """ลบคำสั่ง AT ที่เลือกใน ComboBox"""
-        self.at_command_manager.remove_command_from_history(self.at_combo_main, self.input_cmd_main)
+        self.at_command_manager.remove_command_from_history(self.at_combo_main, self.at_combo_main)
 
     # ==================== 6. SMS HANDLING ====================
     def send_sms_main(self):

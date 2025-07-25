@@ -227,7 +227,7 @@ class MainWindowStyles:
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #c82333, stop:1 #a71e2a);
-                box-shadow: 0 2px 4px rgba(220, 53, 69, 0.3);
+                border: 1px solid #a71e2a;
             }
             QPushButton:pressed {
                 background: #a71e2a;
@@ -252,7 +252,7 @@ class MainWindowStyles:
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #157347, stop:1 #146c43);
-                box-shadow: 0 2px 4px rgba(25, 135, 84, 0.3);
+                border: 1px solid #146c43;
             }
             QPushButton:pressed {
                 background: #146c43;
@@ -277,7 +277,7 @@ class MainWindowStyles:
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #5a359a, stop:1 #4c2d83);
-                box-shadow: 0 2px 4px rgba(111, 66, 193, 0.3);
+                border: 1px solid #5a359a;
             }
             QPushButton:pressed {
                 background: #4c2d83;
@@ -325,7 +325,7 @@ class MainWindowStyles:
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #0b5ed7, stop:1 #0a58ca);
-                box-shadow: 0 2px 4px rgba(13, 110, 253, 0.3);
+                border: 1px solid #0a58ca;
             }
             QPushButton:pressed {
                 background: #0a58ca;
@@ -348,7 +348,7 @@ class MainWindowStyles:
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #157347, stop:1 #146c43);
-                box-shadow: 0 2px 4px rgba(25, 135, 84, 0.3);
+                border: 1px solid #146c43;
             }
             QPushButton:pressed {
                 background: #146c43;
@@ -377,6 +377,31 @@ class MainWindowStyles:
             }
             QPushButton:pressed {
                 background: #b02a37;
+                padding-top: 9px;
+            }
+        """
+    
+    @staticmethod
+    def get_help_button_style():
+        """Delete Button Style - ปุ่มลบโทนแดงสด"""
+        return """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #808080, stop:1 #808080);
+                color: white;
+                font-weight: 600;
+                border-radius: 5px;
+                padding: 8px 0;
+                font-size: 13px;
+                border: 1px solid #808080;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #999999, stop:1 #999999);
+                box-shadow: 0 2px 4px rgba(220, 53, 69, 0.4);
+            }
+            QPushButton:pressed {
+                background: #808080;
                 padding-top: 9px;
             }
         """

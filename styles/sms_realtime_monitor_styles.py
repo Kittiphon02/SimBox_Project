@@ -107,7 +107,7 @@ class SmsRealtimeMonitorStyles:
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #157347, stop:1 #146c43);
-                box-shadow: 0 2px 4px rgba(25, 135, 84, 0.3);
+                border: 1px solid #146c43;
             }
             QPushButton:pressed {
                 background: #146c43;
@@ -137,7 +137,7 @@ class SmsRealtimeMonitorStyles:
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #c82333, stop:1 #a71e2a);
-                box-shadow: 0 2px 4px rgba(220, 53, 69, 0.3);
+                border: 1px solid #a71e2a;
             }
             QPushButton:pressed {
                 background: #a71e2a;
