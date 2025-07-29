@@ -390,7 +390,7 @@ class SimInfoWindow(QMainWindow):
         self.table.setStyleSheet(MainWindowStyles.get_table_style())
     
     def setup_connections(self):
-        """เชื่อมต่อ signals และ slots"""
+        """เชื่อมต่อ signals และ slots - แก้ไขหลัก"""
         # Port management
         self.btn_refresh.clicked.connect(self.refresh_ports)
         
@@ -408,21 +408,54 @@ class SimInfoWindow(QMainWindow):
         self.btn_show_sms.clicked.connect(self.sms_inbox_manager.show_inbox_sms)
         self.btn_clear_sms_main.clicked.connect(self.sms_inbox_manager.clear_all_sms)
         
-        # ========== แก้ไขส่วนนี้ ==========
-        # วิธีที่ 1: ใช้ returnPressed (ปัญหาอาจมาจากนี่)
+        # แก้ไข Enter key connections - ใช้วิธีที่ปลอดภัยกว่า
         try:
-            # ลองวิธีนี้ก่อน
-            self.at_combo_main.lineEdit().returnPressed.connect(self.send_at_command_main)
-            print("✅ Method 1: returnPressed connected")
+            # สำหรับ AT Command ComboBox
+            if hasattr(self.at_combo_main, 'lineEdit'):
+                line_edit = self.at_combo_main.lineEdit()
+                if line_edit:
+                    line_edit.returnPressed.connect(self.send_at_command_main)
+                    print("✅ AT Command Enter key connected successfully")
+            else:
+                # วิธีสำรอง - ใช้ QComboBox signal
+                self.at_combo_main.editTextChanged.connect(self._handle_at_combo_change)
+                print("✅ AT Command fallback connection established")
+                
         except Exception as e:
-            print(f"❌ Method 1 failed: {e}")
+            print(f"❌ AT Command Enter key connection failed: {e}")
+            # วิธีสำรองสุดท้าย - ใช้ key event
+            self.at_combo_main.installEventFilter(self)
 
-        # เพิ่มการเชื่อมต่อสำหรับ Phone input
         try:
+            # สำหรับ Phone number input
             self.input_phone_main.returnPressed.connect(self.send_sms_main)
-            print("✅ Phone input Enter key connected")
+            print("✅ Phone input Enter key connected successfully")
         except Exception as e:
-            print(f"❌ Phone input connection failed: {e}")
+            print(f"❌ Phone input Enter key connection failed: {e}")
+            
+        try:
+            # สำหรับ SMS text input - ใช้ Ctrl+Enter
+            from PyQt5.QtWidgets import QShortcut
+            from PyQt5.QtGui import QKeySequence
+            sms_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self.input_sms_main)
+            sms_shortcut.activated.connect(self.send_sms_main)
+            print("✅ SMS Ctrl+Enter shortcut connected successfully")
+        except Exception as e:
+            print(f"❌ SMS shortcut connection failed: {e}")
+
+    def _handle_at_combo_change(self, text):
+        """Handle AT combo text change for fallback Enter key support"""
+        # เก็บข้อความล่าสุด
+        self._last_at_text = text
+
+    def eventFilter(self, obj, event):
+        """Event filter สำหรับ Enter key fallback"""
+        if obj == self.at_combo_main:
+            if event.type() == event.KeyPress:
+                if event.key() == 16777220:  # Enter key
+                    self.send_at_command_main()
+                    return True
+        return super().eventFilter(obj, event)
 
     def setup_keyboard_shortcuts(self):
         """ตั้งค่า keyboard shortcuts"""
@@ -460,6 +493,17 @@ class SimInfoWindow(QMainWindow):
         # ถ้าเปิด auto ให้สตาร์ท monitor
         if self.auto_sms_monitor:
             self.start_sms_monitor()
+        
+        # เรียกเชื่อมต่อ serial และเริ่ม monitor
+        port = self.port_combo.currentData()
+        baudrate = int(self.baud_combo.currentText())
+
+        if port and port != "Device not found":
+            from managers.port_manager import SerialConnectionManager
+            self.connection_manager = SerialConnectionManager(self)
+            self.connection_manager.start_sms_monitor(port, baudrate)
+        else:
+            self.update_at_result_display("[INIT] ❌ No valid serial port to start monitoring")
 
     # ==================== 4. PORT & CONNECTION MANAGEMENT ====================
     def refresh_ports(self):
@@ -521,14 +565,37 @@ class SimInfoWindow(QMainWindow):
 
     # ==================== 5. AT COMMAND HANDLING ====================
     def send_at_command_main(self):
-        """ส่งคำสั่ง AT จากหน้าหลัก"""
-        if not self.serial_thread:
-            QMessageBox.warning(self, "Notice", "No connection found with Serial")
+        """ส่งคำสั่ง AT จากหน้าหลัก - แก้ไขหลัก"""
+        # ตรวจสอบการเชื่อมต่อ serial
+        if not hasattr(self, 'serial_thread') or not self.serial_thread:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, 
+                "No Connection", 
+                "❌ No serial connection found!\n\n"
+                "Please:\n"
+                "1. Select correct USB Port\n"
+                "2. Click 'Refresh Ports'\n"
+                "3. Make sure the modem is connected"
+            )
             return
         
+        # ตรวจสอบว่า thread ยังทำงานอยู่
+        if not self.serial_thread.isRunning():
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, 
+                "Connection Lost", 
+                "❌ Serial connection is not active!\n\n"
+                "Please click 'Refresh Ports' to reconnect."
+            )
+            return
+        
+        # ดึงคำสั่ง AT
         cmd = self.at_combo_main.currentText().strip()
         if not cmd:
-            QMessageBox.warning(self, "Notice", "Please fill in the order AT")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Empty Command", "⚠️ Please enter an AT command")
             return
         
         # ตรวจจับคำสั่งพิเศษ
@@ -545,13 +612,23 @@ class SimInfoWindow(QMainWindow):
             self.update_at_command_display(cmd)
             return
         
+        # ล้างหน้าจอผลลัพธ์
         self.clear_at_displays()
         
         # เพิ่มคำสั่งลงประวัติ
         self.at_command_manager.add_command_to_history(self.at_combo_main, cmd)
         
+        # แสดงคำสั่งที่ส่ง
         self.update_at_command_display(cmd)
-        self.serial_thread.send_command(cmd)
+        
+        # ส่งคำสั่งผ่าน serial thread
+        try:
+            success = self.serial_thread.send_command(cmd)
+            if not success:
+                self.update_at_result_display("[ERROR] ❌ Failed to send command - serial connection issue")
+        except Exception as e:
+            self.update_at_result_display(f"[ERROR] ❌ Exception while sending command: {e}")
+
 
     def remove_at_command_main(self):
         """ลบคำสั่ง AT ที่เลือกใน ComboBox"""
@@ -559,13 +636,59 @@ class SimInfoWindow(QMainWindow):
 
     # ==================== 6. SMS HANDLING ====================
     def send_sms_main(self):
-        """ส่ง SMS จากหน้าหลัก พร้อม Loading Bar"""
+        """ส่ง SMS จากหน้าหลัก - แก้ไขหลัก"""
         phone_number = self.input_phone_main.text().strip()
         message = self.input_sms_main.toPlainText().strip()
         
-        if self.sms_manager.prepare_sms_sending(phone_number, message):
-            self.show_loading_dialog()
-            self.sms_manager.send_sms_with_loading(phone_number, message)
+        # ตรวจสอบข้อมูลที่ป้อน
+        if not phone_number:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Missing Phone Number", "⚠️ Please enter a phone number")
+            self.input_phone_main.setFocus()
+            return
+            
+        if not message:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Missing Message", "⚠️ Please enter a message to send")
+            self.input_sms_main.setFocus()
+            return
+        
+        # ตรวจสอบการเชื่อมต่อ serial
+        if not hasattr(self, 'serial_thread') or not self.serial_thread:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, 
+                "No Connection", 
+                "❌ No serial connection found!\n\n"
+                "Please click 'Refresh Ports' to connect first."
+            )
+            return
+            
+        if not self.serial_thread.isRunning():
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, 
+                "Connection Lost", 
+                "❌ Serial connection is not active!\n\n"
+                "Please click 'Refresh Ports' to reconnect."
+            )
+            return
+        
+        # ส่ง SMS ผ่าน SMS handler
+        if hasattr(self, 'sms_handler'):
+            try:
+                success = self.sms_handler.send_sms_main(phone_number, message)
+                if success:
+                    self.update_at_result_display(f"[SMS] ✅ SMS sent to {phone_number}: {message}")
+                    # ล้างฟอร์มหลังส่งสำเร็จ
+                    self.input_phone_main.clear()
+                    self.input_sms_main.clear()
+                else:
+                    self.update_at_result_display(f"[SMS] ❌ Failed to send SMS to {phone_number}")
+            except Exception as e:
+                self.update_at_result_display(f"[SMS ERROR] ❌ Exception while sending SMS: {e}")
+        else:
+            self.update_at_result_display("[SMS ERROR] ❌ SMS handler not available")
 
     def show_loading_dialog(self):
         """แสดง Loading Dialog"""
@@ -631,6 +754,15 @@ class SimInfoWindow(QMainWindow):
         """จัดการ SIM ready ในโหมดอัตโนมัติ"""
         if not self.sim_recovery_in_progress:
             self.update_at_result_display("[AUTO] SIM ready signal received")
+
+            # เพิ่มตรงนี้: refresh ข้อมูล SIM อัตโนมัติ
+            QTimer.singleShot(1500, self.auto_refresh_sim_data)
+    
+    def auto_refresh_sim_data(self):
+        """รีเฟรชข้อมูล SIM อัตโนมัติเมื่อ SIM พร้อม"""
+        self.update_at_result_display("[AUTO] ✅ SIM ready detected - refreshing SIM data...")
+        self.reload_sim_with_progress()
+
 
     def on_cpin_status_received(self, status):
         """จัดการสถานะ CPIN ที่ได้รับ"""

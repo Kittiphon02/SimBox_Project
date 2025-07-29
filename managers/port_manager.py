@@ -16,11 +16,7 @@ class PortManager:
         self.parent = parent
     
     def refresh_ports(self, port_combo):
-        """รีเฟรชรายการพอร์ต Serial
-        
-        Args:
-            port_combo: QComboBox widget สำหรับแสดงพอร์ต
-        """
+        """รีเฟรชรายการพอร์ต Serial"""
         if hasattr(self.parent, 'update_at_result_display'):
             self.parent.update_at_result_display("[REFRESH] Refreshing serial ports...")
         
@@ -52,15 +48,7 @@ class PortManager:
                 self.parent.update_at_result_display("[REFRESH] Selected default port")
     
     def reload_sim_with_progress(self, port_combo, baud_combo):
-        """โหลดข้อมูล SIM ใหม่พร้อมการแสดงสถานะ
-        
-        Args:
-            port_combo: QComboBox สำหรับพอร์ต
-            baud_combo: QComboBox สำหรับ baudrate
-            
-        Returns:
-            list: รายการ SIM ที่โหลดได้
-        """
+        """โหลดข้อมูล SIM ใหม่พร้อมการแสดงสถานะ"""
         if hasattr(self.parent, 'update_at_result_display'):
             self.parent.update_at_result_display("[REFRESH] Reloading SIM data...")
         
@@ -113,15 +101,7 @@ class PortManager:
             return []
     
     def query_signal_strength(self, port, baudrate):
-        """ส่ง AT+CSQ แล้วคืนค่าเป็นข้อความพร้อม Unicode Signal Bars
-        
-        Args:
-            port (str): พอร์ต Serial
-            baudrate (int): Baudrate
-            
-        Returns:
-            str: ข้อความแสดงสัญญาณ
-        """
+        """ส่ง AT+CSQ แล้วคืนค่าเป็นข้อความพร้อม Unicode Signal Bars"""
         try:
             ser = serial.Serial(port, baudrate, timeout=3)
             time.sleep(0.1)
@@ -183,15 +163,7 @@ class PortManager:
             return '▁▁▁▁ Error'
     
     def test_port_connection(self, port, baudrate):
-        """ทดสอบการเชื่อมต่อพอร์ต
-        
-        Args:
-            port (str): พอร์ต Serial
-            baudrate (int): Baudrate
-            
-        Returns:
-            bool: True ถ้าเชื่อมต่อได้
-        """
+        """ทดสอบการเชื่อมต่อพอร์ต"""
         try:
             ser = serial.Serial(port, baudrate, timeout=2)
             ser.write(b'AT\r\n')
@@ -204,78 +176,6 @@ class PortManager:
         except Exception as e:
             print(f"Port connection test failed: {e}")
             return False
-    
-    def get_modem_info(self, port, baudrate):
-        """ดึงข้อมูลโมเด็ม
-        
-        Args:
-            port (str): พอร์ต Serial
-            baudrate (int): Baudrate
-            
-        Returns:
-            dict: ข้อมูลโมเด็ม
-        """
-        try:
-            ser = serial.Serial(port, baudrate, timeout=3)
-            
-            modem_info = {
-                'manufacturer': 'Unknown',
-                'model': 'Unknown',
-                'version': 'Unknown',
-                'imei': 'Unknown'
-            }
-            
-            # ดึงข้อมูล manufacturer
-            ser.write(b'AT+CGMI\r\n')
-            time.sleep(0.2)
-            response = ser.read(200).decode(errors='ignore')
-            for line in response.split('\n'):
-                line = line.strip()
-                if line and not line.startswith('AT') and 'OK' not in line:
-                    modem_info['manufacturer'] = line
-                    break
-            
-            # ดึงข้อมูล model
-            ser.write(b'AT+CGMM\r\n')
-            time.sleep(0.2)
-            response = ser.read(200).decode(errors='ignore')
-            for line in response.split('\n'):
-                line = line.strip()
-                if line and not line.startswith('AT') and 'OK' not in line:
-                    modem_info['model'] = line
-                    break
-            
-            # ดึงข้อมูล version
-            ser.write(b'AT+CGMR\r\n')
-            time.sleep(0.2)
-            response = ser.read(200).decode(errors='ignore')
-            for line in response.split('\n'):
-                line = line.strip()
-                if line and not line.startswith('AT') and 'OK' not in line:
-                    modem_info['version'] = line
-                    break
-            
-            # ดึงข้อมูล IMEI
-            ser.write(b'AT+CGSN\r\n')
-            time.sleep(0.2)
-            response = ser.read(200).decode(errors='ignore')
-            for line in response.split('\n'):
-                line = line.strip()
-                if line and line.isdigit() and len(line) >= 15:
-                    modem_info['imei'] = line
-                    break
-            
-            ser.close()
-            return modem_info
-            
-        except Exception as e:
-            print(f"Error getting modem info: {e}")
-            return {
-                'manufacturer': 'Error',
-                'model': 'Error', 
-                'version': 'Error',
-                'imei': 'Error'
-            }
 
 
 class SerialConnectionManager:
@@ -285,21 +185,29 @@ class SerialConnectionManager:
         self.parent = parent
     
     def setup_serial_monitor(self, port, baudrate):
-        """ตั้งค่า Serial Monitor Thread
-        
-        Args:
-            port (str): พอร์ต Serial
-            baudrate (int): Baudrate
-            
-        Returns:
-            SerialMonitorThread: Thread object หรือ None
-        """
+        """ตั้งค่า Serial Monitor Thread - แก้ไขหลัก"""
         try:
             # หยุด thread เดิมถ้ามี
             if hasattr(self.parent, 'serial_thread') and self.parent.serial_thread:
+                if hasattr(self.parent, 'update_at_result_display'):
+                    self.parent.update_at_result_display("[SETUP] Stopping previous serial thread...")
+                
                 self.parent.serial_thread.stop()
+                self.parent.serial_thread.wait()
+                self.parent.serial_thread = None
             
             if not port or port == "Device not found":
+                if hasattr(self.parent, 'update_at_result_display'):
+                    self.parent.update_at_result_display("[SETUP] ❌ No valid port to connect")
+                return None
+            
+            # ทดสอบการเชื่อมต่อก่อน
+            try:
+                test_serial = serial.Serial(port, baudrate, timeout=2)
+                test_serial.close()
+            except Exception as e:
+                if hasattr(self.parent, 'update_at_result_display'):
+                    self.parent.update_at_result_display(f"[SETUP] ❌ Cannot connect to {port}: {e}")
                 return None
             
             from services.serial_service import SerialMonitorThread
@@ -321,10 +229,11 @@ class SerialConnectionManager:
             if hasattr(self.parent, 'on_cpin_status_received'):
                 serial_thread.cpin_status_signal.connect(self.parent.on_cpin_status_received)
             
+            # เริ่ม thread
             serial_thread.start()
             
             if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display("[SETUP] Serial monitor started with SMS notification")
+                self.parent.update_at_result_display(f"[SETUP] ✅ Serial monitor started on {port}")
 
             return serial_thread
             
@@ -334,12 +243,7 @@ class SerialConnectionManager:
             return None
     
     def start_sms_monitor(self, port, baudrate):
-        """เริ่ม SMS monitoring
-        
-        Args:
-            port (str): พอร์ต Serial
-            baudrate (int): Baudrate
-        """
+        """เริ่ม SMS monitoring"""
         try:
             serial_thread = self.setup_serial_monitor(port, baudrate)
             if serial_thread:
@@ -347,10 +251,14 @@ class SerialConnectionManager:
                 if hasattr(self.parent, 'serial_thread'):
                     self.parent.serial_thread = serial_thread
                 
-                # Auto-reset CFUN
-                serial_thread.send_command("AT+CFUN=0")
+                # Auto-reset CFUN (รอให้ thread เริ่มก่อน)
                 from PyQt5.QtCore import QTimer
-                QTimer.singleShot(200, lambda: serial_thread.send_command("AT+CFUN=1"))
+                def delayed_cfun_reset():
+                    if serial_thread and serial_thread.isRunning():
+                        serial_thread.send_command("AT+CFUN=0")
+                        QTimer.singleShot(2000, lambda: serial_thread.send_command("AT+CFUN=1"))
+                
+                QTimer.singleShot(1000, delayed_cfun_reset)
                 
                 if hasattr(self.parent, 'update_at_result_display'):
                     self.parent.update_at_result_display("[SMS MONITOR] SMS monitoring started")
@@ -382,63 +290,122 @@ class SimRecoveryManager:
         self.parent = parent
     
     def manual_sim_recovery(self):
-        """ทำ SIM recovery แบบ manual"""
+        """ทำ SIM recovery แบบ manual - แก้ไขหลัก"""
+        # ตรวจสอบ serial connection
         if not hasattr(self.parent, 'serial_thread') or not self.parent.serial_thread:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self.parent, "Notice", "No serial connection available")
+            QMessageBox.warning(
+                self.parent, 
+                "No Connection", 
+                "❌ No serial connection available!\n\nPlease:\n1. Select correct USB Port\n2. Click 'Refresh Ports' first\n3. Make sure the modem is connected"
+            )
             return
         
+        # ตรวจสอบว่า thread ยังทำงานอยู่
+        if not self.parent.serial_thread.isRunning():
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self.parent, 
+                "Connection Not Active", 
+                "❌ Serial connection is not active!\n\nPlease click 'Refresh Ports' to reconnect."
+            )
+            return
+        
+        # ตรวจสอบ recovery ที่กำลังดำเนินการ
         if getattr(self.parent, 'sim_recovery_in_progress', False):
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.information(
                 self.parent, "Recovery in Progress", 
-                "SIM recovery is already in progress. Please wait..."
+                "⏳ SIM recovery is already in progress.\n\nPlease wait for the current process to complete..."
             )
             return
         
+        # ยืนยันการทำ recovery
         from PyQt5.QtWidgets import QMessageBox
         reply = QMessageBox.question(
             self.parent, 
             'Manual SIM Recovery', 
-            'Do you want to perform manual SIM recovery?\n\n'
-            'This will:\n'
-            '1. Reset the modem (AT+CFUN=0/1)\n'
-            '2. Check SIM status (AT+CPIN?)\n'
-            '3. Auto-refresh SIM data if ready\n\n'
-            'Proceed?',
+            '🔧 Do you want to perform manual SIM recovery?\n\n'
+            'This process will:\n'
+            '• Reset the modem (AT+CFUN=0 → AT+CFUN=1)\n'
+            '• Check SIM status (AT+CPIN?)\n'
+            '• Auto-refresh SIM data if successful\n\n'
+            '⚠️ This may take 10-15 seconds to complete.\n\n'
+            'Proceed with SIM recovery?',
             QMessageBox.Yes | QMessageBox.No, 
             QMessageBox.No
         )
         
         if reply == QMessageBox.Yes:
+            # เริ่ม recovery process
             if hasattr(self.parent, 'sim_recovery_in_progress'):
                 self.parent.sim_recovery_in_progress = True
             
             if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display("[MANUAL] Starting enhanced SIM recovery...")
+                self.parent.update_at_result_display("[MANUAL] 🔧 Starting enhanced SIM recovery...")
             
             # เริ่ม recovery ผ่าน serial thread
             if hasattr(self.parent.serial_thread, 'force_sim_recovery'):
                 self.parent.serial_thread.force_sim_recovery()
             else:
                 self._fallback_recovery()
+                
+            # แสดง progress message
+            self._show_recovery_progress()
+    
+    def _show_recovery_progress(self):
+        """แสดงความคืบหน้าของ recovery"""
+        if hasattr(self.parent, 'show_non_blocking_message'):
+            self.parent.show_non_blocking_message(
+                "SIM Recovery in Progress",
+                "🔧 SIM recovery is in progress...\n\n"
+                "Steps:\n"
+                "1. ⏳ Disabling modem (AT+CFUN=0)\n"
+                "2. ⏳ Enabling modem (AT+CFUN=1)\n"
+                "3. ⏳ Checking SIM status (AT+CPIN?)\n"
+                "4. ⏳ Refreshing SIM data\n\n"
+                "Please wait 10-15 seconds..."
+            )
     
     def _fallback_recovery(self):
         """วิธี recovery สำรอง"""
         try:
             if hasattr(self.parent, 'serial_thread'):
-                self.parent.serial_thread.send_command("AT+CFUN=0")
+                # ส่งคำสั่ง recovery แบบ sequential
+                success1 = self.parent.serial_thread.send_command("AT+CFUN=0")
                 
-                from PyQt5.QtCore import QTimer
-                QTimer.singleShot(2000, lambda: self.parent.serial_thread.send_command("AT+CFUN=1"))
-                QTimer.singleShot(5000, lambda: self.parent.serial_thread.send_command("AT+CPIN?"))
-                
-                if hasattr(self.parent, 'update_at_result_display'):
-                    self.parent.update_at_result_display("[MANUAL] Fallback recovery initiated")
+                if success1:
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(2000, lambda: self.parent.serial_thread.send_command("AT+CFUN=1"))
+                    QTimer.singleShot(5000, lambda: self.parent.serial_thread.send_command("AT+CPIN?"))
+                    
+                    if hasattr(self.parent, 'update_at_result_display'):
+                        self.parent.update_at_result_display("[MANUAL] Fallback recovery initiated")
+                else:
+                    if hasattr(self.parent, 'update_at_result_display'):
+                        self.parent.update_at_result_display("[MANUAL ERROR] Failed to send AT+CFUN=0")
+                    self._recovery_failed("Failed to send AT+CFUN=0 command")
                     
         except Exception as e:
             if hasattr(self.parent, 'update_at_result_display'):
                 self.parent.update_at_result_display(f"[MANUAL ERROR] Fallback recovery failed: {e}")
+            self._recovery_failed(str(e))
+    
+    def _recovery_failed(self, error_msg):
+        """จัดการเมื่อ recovery ล้มเหลว"""
+        if hasattr(self.parent, 'sim_recovery_in_progress'):
+            self.parent.sim_recovery_in_progress = False
+            
+        if hasattr(self.parent, 'show_non_blocking_message'):
+            self.parent.show_non_blocking_message(
+                "SIM Recovery Failed",
+                f"❌ SIM recovery failed!\n\n"
+                f"Error: {error_msg}\n\n"
+                "Please try:\n"
+                "• Check SIM card connection\n"
+                "• Restart the modem manually\n"
+                "• Click 'Refresh Ports' and try again"
+            )
     
     def on_recovery_timeout(self):
         """จัดการเมื่อ recovery timeout"""
@@ -455,5 +422,6 @@ class SimRecoveryManager:
                 "Please check:\n"
                 "• SIM card connection\n"
                 "• Hardware issues\n"
-                "• Manual modem restart may be needed"
+                "• Manual modem restart may be needed\n\n"
+                "Try clicking 'Refresh Ports' and attempt recovery again."
             )
