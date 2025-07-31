@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QTextEdit, QFileDialog,
     QDateEdit, QCheckBox, QFrame, QSpacerItem
 )
-from PyQt5.QtCore import Qt, QEvent, QDate, pyqtSignal
+from PyQt5.QtCore import Qt, QEvent, QDate, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QPalette, QColor
 import sys, os, csv, time, re
 from datetime import datetime, timedelta
@@ -12,6 +12,7 @@ from styles import SmsLogDialogStyles
 import json
 from pathlib import Path
 import portalocker
+from core.utility_functions import normalize_phone_number
 
 def get_log_directory_from_settings():
     """ดึง log directory จาก settings.json"""
@@ -55,7 +56,7 @@ class SmsLogDialog(QDialog):
         self.apply_styles()  # ใช้สไตล์ใหม่
         
         # โหลดข้อมูลเริ่มต้น
-        self.load_log()
+        QTimer.singleShot(100, self.load_log)
         
         # เชื่อมต่อ double click event
         self.table.cellDoubleClicked.connect(self.handle_row_double_clicked)
@@ -225,14 +226,18 @@ class SmsLogDialog(QDialog):
         return control_widget
 
     def create_maximized_table_section(self):
-        """สร้าง table section ที่ใหญ่ที่สุด"""
+        """สร้าง table section ที่ใหญ่ที่สุด - ปรับขนาดคอลัมน์"""
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(['📅 DATE', '🕐 TIME', '📱 PHONE', '💬 MESSAGE'])
         
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # วันที่
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # เวลา
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # เบอร์โทร
+        
+        # แก้ไขให้คอลัมน์เบอร์โทรกว้างพอแสดงเบอร์ 10 หลัก
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        self.table.setColumnWidth(2, 130)  # เพิ่มความกว้างเป็น 130px
+        
         header.setSectionResizeMode(3, QHeaderView.Stretch)  # ข้อความ (ขยายเต็ม)
         
         self.table.setMinimumHeight(500)
@@ -335,17 +340,26 @@ class SmsLogDialog(QDialog):
         return phone.lstrip('0')
 
     def parse_date_from_string(self, date_str):
-        """แปลงข้อความวันที่เป็น datetime object"""
+        """แปลงข้อความวันที่เป็น datetime object - แก้ไขปีให้ถูกต้อง"""
         try:
             if ',' in date_str:
                 date_part, time_part = date_str.split(',')
                 y, m, d = date_part.split('/')
                 year = int(y)
-                year += 2000 if year < 100 else 0
+                
+                # แก้ไขการคำนวณปี
+                if year < 100:
+                    # ถ้าเป็น YY format
+                    if year >= 50:  # 50-99 = 1950-1999
+                        year += 1900
+                    else:  # 00-49 = 2000-2049
+                        year += 2000
+                
                 return datetime.strptime(f"{year:04d}-{m}-{d} {time_part}", "%Y-%m-%d %H:%M:%S")
             else:
                 return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-        except:
+        except Exception as e:
+            print(f"[❌ Date parse failed] {date_str} | {e}")
             return None
 
     def update_status_label(self, custom_count=None):
@@ -380,24 +394,15 @@ class SmsLogDialog(QDialog):
             
     # ==================== 4. DATA LOADING ====================
     def load_log(self):
-        """โหลดข้อมูล SMS จากไฟล์ - รองรับรูปแบบใหม่"""
+        """โหลดข้อมูล SMS จากไฟล์ - แก้ไขให้แสดงวันที่ปัจจุบันถูกต้อง"""
         idx = self.combo.currentIndex()
         
-        # ใช้ sms_log module เพื่อดึง path ที่ถูกต้อง
         try:
             from services.sms_log import get_log_file_path
             filename = "sms_sent_log.csv" if idx != 1 else "sms_inbox_log.csv"
             log_path = get_log_file_path(filename)
-            
-            # Debug: แสดงการใช้ path
-            if '\\\\' in log_path or '//' in log_path:
-                print(f"[SMS LOG DIALOG] Using network path: {log_path}")
-            else:
-                print(f"[SMS LOG DIALOG] Using local path: {log_path}")
-                
         except Exception as e:
             print(f"Error getting log file path: {e}")
-            # Fallback ถ้า function ไม่มี
             filename = "sms_sent_log.csv" if idx != 1 else "sms_inbox_log.csv"
             log_path = os.path.join("log", filename)
         
@@ -411,50 +416,84 @@ class SmsLogDialog(QDialog):
             self.table.setItem(0, 3, QTableWidgetItem("กรุณาส่ง SMS ก่อนเพื่อสร้างข้อมูล"))
             for col in range(4):
                 it = self.table.item(0, col)
-                it.setTextAlignment(Qt.AlignCenter)
-                it.setForeground(QColor(127, 140, 141))
+                if it:
+                    it.setTextAlignment(Qt.AlignCenter)
+                    it.setForeground(QColor(127, 140, 141))
             self.update_status_label()
             return
 
-        # ส่วนที่เหลือของฟังก์ชันเหมือนเดิม...
         try:
             with open(log_path, encoding="utf-8") as f:
-                reader = csv.reader(f)
+                reader = csv.reader(f, delimiter=',', quotechar='"')
                 next(reader, None)  # ข้าม header
 
-                for row in reader:
-                    if idx == 1:
-                        # Inbox pad ให้ครบ 3 คอลัมน์
-                        dt_str, phone, message = (row + ["", ""])[:3]
+                for i, row in enumerate(reader):
+                    if i > 10000:
+                        break
+
+                    if idx == 1:  # Inbox
+                        if len(row) >= 3:
+                            dt_str, phone, message = row[:3]
+                        else:
+                            continue
+
                         status = ""
-                        # parse inbox date/time
                         dt_str = dt_str.strip('"')
 
-                        # parse inbox date/time ฟอร์แมต YY/MM/DD,HH:MM:SS+TZ
+                        # ✅ แก้ไขการ parse วันที่ใหม่ทั้งหมด
                         if "," in dt_str:
                             dpart, tpart = dt_str.split(",", 1)
                             if "+" in tpart:
                                 tpart = tpart.split("+", 1)[0]
-                            # แก้เป็น: yy2, mm, dd2 = map(int, dpart.split("/"))
-                            yy2, mm, dd2 = map(int, dpart.split("/"))
-                            yyyy = yy2 + 2000 if yy2 < 100 else yy2
-                            # สลับให้เป็น วัน/เดือน/ปี
-                            date = f"{dd2:02d}/{mm:02d}/{yyyy}"
-                            time = tpart.strip()
+                            
+                            print(f"🔍 DEBUG: Raw date part = '{dpart}'")
+                            
+                            # แยกวันที่ - รูปแบบ DD/MM/YY
                             try:
-                                datetime_obj = datetime.strptime(f"{yyyy}-{mm:02d}-{dd:02d} {time}", 
-                                                                "%Y-%m-%d %H:%M:%S")
-                            except:
+                                dd, mm, yy = map(int, dpart.split("/"))
+                                print(f"🔍 DEBUG: Parsed DD={dd}, MM={mm}, YY={yy}")
+                                
+                                # ✅ แปลงปี YY เป็น YYYY ให้ถูกต้อง
+                                current_year = 2025
+                                
+                                # ถ้า YY เป็น 25 = ปี 2025
+                                # ถ้า YY เป็น 24 = ปี 2024  
+                                # ถ้า YY เป็น 30 = ปี 1930 (เก่า)
+                                
+                                if yy <= 30:  # 00-30 = 2000-2030
+                                    yyyy = 2000 + yy
+                                else:         # 31-99 = 1931-1999
+                                    yyyy = 1900 + yy
+                                
+                                # บังคับให้ไม่เกินปีปัจจุบัน
+                                if yyyy > current_year:
+                                    yyyy = current_year
+                                
+                                date = f"{dd:02d}/{mm:02d}/{yyyy}"
+                                time = tpart.strip()
+                                
+                                print(f"✅ DEBUG: Final date = {date}, time = {time}")
+                                
+                                try:
+                                    datetime_obj = datetime.strptime(f"{yyyy}-{mm:02d}-{dd:02d} {time}", "%Y-%m-%d %H:%M:%S")
+                                except:
+                                    try:
+                                        datetime_obj = datetime.strptime(f"{yyyy}-{mm:02d}-{dd:02d} {time}", "%Y-%m-%d %H:%M")
+                                    except:
+                                        datetime_obj = None
+                                        
+                            except ValueError as e:
+                                print(f"❌ Error parsing date {dpart}: {e}")
+                                date = dt_str
+                                time = ""
                                 datetime_obj = None
                         else:
                             date = dt_str
                             time = ""
                             datetime_obj = None
 
-                    else:
-                        # Send or Fail pad ให้ครบ 4 คอลัมน์
+                    else:  # Send or Fail
                         dt_str, phone, message, status = (row + ["", "", ""])[:4]
-                        # parse outbox date/time
                         try:
                             dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
                             date = dt.strftime("%d/%m/%Y")
@@ -463,9 +502,15 @@ class SmsLogDialog(QDialog):
                         except:
                             date, time, datetime_obj = dt_str, "", None
 
-                    # กรองตามเบอร์ถ้ามี
-                    if self.filter_phone and phone != self.filter_phone:
+                    # เบอร์มาจาก CSV (เก็บมาตรง ๆ แล้ว)
+                    raw_phone = phone.strip()
+                    print(f"🔍 DEBUG: Using raw phone = '{raw_phone}'")
+                    display_phone = raw_phone
+                    
+                    # กรองตามเบอร์ถ้ามี (เทียบกับ filter_phone ตรง ๆ)
+                    if self.filter_phone and display_phone != self.filter_phone:
                         continue
+                        
                     # กรณี Fail ให้เอาเฉพาะ status != "Sent"
                     if idx == 2:
                         if not re.search(r'(fail|ล้มเหลว)', status, flags=re.IGNORECASE):
@@ -474,13 +519,14 @@ class SmsLogDialog(QDialog):
                     self.all_data.append({
                         'date': date,
                         'time': time,
-                        'phone': phone,
+                        'phone': display_phone,
                         'message': message,
                         'datetime': datetime_obj,
                         'status': status
                     })
 
         except Exception as e:
+            print(f"Error loading log file: {e}")
             self.table.setRowCount(1)
             self.table.setItem(0, 0, QTableWidgetItem("❌ เกิดข้อผิดพลาด"))
             self.table.setItem(0, 1, QTableWidgetItem(""))
@@ -488,38 +534,115 @@ class SmsLogDialog(QDialog):
             self.table.setItem(0, 3, QTableWidgetItem(f"ไม่สามารถอ่านไฟล์ได้: {e}"))
             for col in range(4):
                 it = self.table.item(0, col)
-                it.setTextAlignment(Qt.AlignCenter)
-                it.setForeground(QColor(231, 76, 60))
+                if it:
+                    it.setTextAlignment(Qt.AlignCenter)
+                    it.setForeground(QColor(231, 76, 60))
             return
 
-        print(f"Loaded {len(self.all_data)} records from {log_path}")  # Debug
+        print(f"Loaded {len(self.all_data)} records from {log_path}")
         self.apply_sort_filter()
+
+    def show_no_file_message(self):
+        """แสดงข้อความเมื่อไม่มีไฟล์"""
+        self.table.setRowCount(1)
+        self.table.setItem(0, 0, QTableWidgetItem("📂 ไม่มีไฟล์ log"))
+        self.table.setItem(0, 1, QTableWidgetItem(""))
+        self.table.setItem(0, 2, QTableWidgetItem(""))
+        self.table.setItem(0, 3, QTableWidgetItem("กรุณาส่ง SMS ก่อนเพื่อสร้างข้อมูล"))
+        for col in range(4):
+            it = self.table.item(0, col)
+            if it:
+                it.setTextAlignment(Qt.AlignCenter)
+                it.setForeground(QColor(127, 140, 141))
+        self.update_status_label()
+
+    def show_error_message(self, message):
+        """แสดงข้อความ error"""
+        self.table.setRowCount(1)
+        self.table.setItem(0, 0, QTableWidgetItem("❌ เกิดข้อผิดพลาด"))
+        self.table.setItem(0, 1, QTableWidgetItem(""))
+        self.table.setItem(0, 2, QTableWidgetItem(""))
+        self.table.setItem(0, 3, QTableWidgetItem(str(message)))
+        for col in range(4):
+            it = self.table.item(0, col)
+            if it:
+                it.setTextAlignment(Qt.AlignCenter)
+                it.setForeground(QColor(231, 76, 60))
+        self.update_status_label()
+
+    def parse_sent_datetime(self, dt_str):
+        """แยกฟังก์ชัน parse วันที่สำหรับ sent - รูปแบบ YYYY-MM-DD HH:MM:SS"""
+        try:
+            dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+            # ✅ แปลงเป็น DD/MM/YYYY
+            date = dt.strftime("%d/%m/%Y")
+            time = dt.strftime("%H:%M:%S")
+            return date, time, dt
+        except:
+            return dt_str, "", None
+
+    def parse_inbox_datetime(self, dt_str):
+        """แยกฟังก์ชัน parse วันที่สำหรับ inbox - แก้ไขให้ได้รูปแบบ DD/MM/YYYY"""
+        try:
+            if "," not in dt_str:
+                return dt_str, "", None
+
+            # แยกวันที่และเวลา
+            dpart, tpart = dt_str.split(",", 1)
+            time_str = tpart.split("+", 1)[0].strip()
+
+            # แยกวันที่เป็น [DD, MM, YY or YYYY]
+            parts = dpart.split("/")
+            if len(parts) != 3:
+                return dt_str, "", None
+            dd, mm, yy = parts
+            dd, mm = int(dd), int(mm)
+            yy = int(yy)
+
+            # แปลงปี 2 หลัก → 4 หลัก ถ้ายาว 4 หลัก ก็ตีตรงๆ
+            if len(parts[2]) == 2:
+                current_year = datetime.now().year
+                pivot = current_year % 100
+                if yy <= pivot:
+                    yyyy = 2000 + yy
+                else:
+                    yyyy = 1900 + yy
+            else:
+                yyyy = yy
+
+            # สร้าง text และ datetime object
+            date = f"{dd:02d}/{mm:02d}/{yyyy}"
+            dt_obj = datetime.strptime(f"{yyyy}-{mm:02d}-{dd:02d} {time_str}", 
+                                        "%Y-%m-%d %H:%M:%S")
+            return date, time_str, dt_obj
+        except Exception:
+            return dt_str, "", None
 
     # ==================== 5. DATA FILTERING & SORTING ====================
     def apply_sort_filter(self):
         """ใช้ฟิลเตอร์การเรียงลำดับ"""
         try:
             if not self.all_data:
-                print("No data to sort")  # Debug
+                print("No data to sort")
                 return
                 
-            print(f"Sorting data, count: {len(self.all_data)}, sort index: {self.sort_combo.currentIndex()}")  # Debug
+            print(f"Sorting data, count: {len(self.all_data)}, sort index: {self.sort_combo.currentIndex()}")
             
-            # ไม่ต้องกรองอะไร แค่เรียงลำดับ
+            # กรองข้อมูล
             filtered_data = self.all_data.copy()
             idx = self.combo.currentIndex()
-            filtered_data = self.all_data.copy()
+            
             # ถ้าเป็น SMS Fail ให้กรองเฉพาะที่ status ไม่ใช่ "Sent"
             if idx == 2:
-                filtered_data = [d for d in filtered_data if d.get('status','').lower() != 'sent']
+                filtered_data = [d for d in filtered_data if d.get('status', '').lower() != 'sent']
             
             # เรียงลำดับตามที่เลือก
             if self.sort_combo.currentIndex() == 0:  # รายการล่าสุด (ใหม่ → เก่า)
-                filtered_data.sort(key=lambda x: x['datetime'] or datetime.min, reverse=True)
-                print("Sorted: latest first")  # Debug
+                filtered_data.sort(key=lambda x: x['datetime'] if x['datetime'] else datetime.min, reverse=True)
+                print("Sorted: latest first")
             else:  # รายการเก่ากว่า (เก่า → ใหม่)
-                filtered_data.sort(key=lambda x: x['datetime'] or datetime.min, reverse=False)
-                print("Sorted: oldest first")  # Debug
+                filtered_data.sort(key=lambda x: x['datetime'] if x['datetime'] else datetime.min, reverse=False)
+                print("Sorted: oldest first")
             
             self.display_filtered_data(filtered_data)
             self.update_status_label()
@@ -531,7 +654,7 @@ class SmsLogDialog(QDialog):
 
     # ==================== 6. TABLE DISPLAY ====================
     def display_filtered_data(self, data):
-        """แสดงข้อมูลที่กรองแล้วในตาราง"""
+        """แสดงข้อมูลที่กรองแล้วในตาราง - แก้ไขการแสดงผลเบอร์โทร"""
         self.table.setRowCount(0)
         
         if not data:
@@ -562,9 +685,12 @@ class SmsLogDialog(QDialog):
             time_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row_idx, 1, time_item)
             
-            # เบอร์โทร
-            phone_item = QTableWidgetItem(item['phone'])
+            # เบอร์โทร – ใช้จาก normalize มาแล้ว (ถ้าไม่มี ให้แสดง Unknown)
+            phone_display = item.get('phone') or "Unknown"
+                
+            phone_item = QTableWidgetItem(phone_display)
             phone_item.setTextAlignment(Qt.AlignCenter)
+            phone_item.setToolTip(phone_display)  # แสดง tooltip เต็ม
             self.table.setItem(row_idx, 2, phone_item)
             
             # ข้อความ
@@ -576,9 +702,9 @@ class SmsLogDialog(QDialog):
             if row_idx % 2 == 0:
                 # ตั้งค่า background color สำหรับแถวที่เป็นเลขคู่
                 for col in range(4):
-                    item = self.table.item(row_idx, col)
-                    if item:
-                        item.setBackground(QColor(248, 249, 250))  # สีพื้นหลังเป็นสีเทาอ่อน
+                    cell_item = self.table.item(row_idx, col)
+                    if cell_item:
+                        cell_item.setBackground(QColor(248, 249, 250))  # สีพื้นหลังเป็นสีเทาอ่อน
 
     # ==================== 7. EVENT HANDLERS ====================
     def handle_row_double_clicked(self, row, col):
@@ -627,6 +753,10 @@ class SmsLogDialog(QDialog):
         headers = ['วันที่', 'เวลา', 'เบอร์โทร', 'ข้อความ']
         
         for row in range(row_count):
+            # ข้ามแถวที่ถูกซ่อน (จากการค้นหา)
+            if self.table.isRowHidden(row):
+                continue
+                
             row_data = []
             empty_row = True
             for col in range(4):

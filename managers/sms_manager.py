@@ -65,24 +65,7 @@ class SMSHandler:
         # แยก 3 ช่วง: sender_hex | message_hex | timestamp
         sender_hex, message_hex, timestamp = line.split("|", 2)
         
-        # ตัดเครื่องหมาย " กับช่องว่างที่อาจมากับ hex string
-        sender_hex = sender_hex.strip().replace('"', '').replace(' ', '')
-        message_hex = message_hex.strip().replace(' ', '')
-
-        # 1) ลอง decode UCS-2 ก่อน
-        decoded_sender = decode_ucs2_to_text(sender_hex)
-
-        # 2) ถ้า decode คืนค่าเดิม (แปลงไม่สำเร็จ) ให้ fallback ไปแปลงฐาน16→10
-        if decoded_sender == sender_hex or not decoded_sender.strip():
-            try:
-                sender = str(int(sender_hex, 16))
-            except ValueError:
-                sender = sender_hex
-        else:
-            sender = decoded_sender
-
-        # 3) ตัด null-char ท้ายออก (ในกรณี UCS-2)
-        sender = sender.split("\x00", 1)[0]
+        sender = sender_hex.strip().replace('"', '').replace(' ', '')
 
         # แปลงข้อความด้วย UCS-2 ปกติ
         raw_message = decode_ucs2_to_text(message_hex)

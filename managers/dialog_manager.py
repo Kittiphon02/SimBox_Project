@@ -15,11 +15,6 @@ class DialogManager:
         self.open_dialogs = []
     
     def show_sms_log_dialog(self, filter_phone=None):
-        """เปิดหน้าต่างดูประวัติ SMS
-        
-        Args:
-            filter_phone (str): เบอร์โทรที่ต้องการกรอง (optional)
-        """
         try:
             from widgets.sms_log_dialog import SmsLogDialog
             dlg = SmsLogDialog(filter_phone=filter_phone, parent=self.parent)
@@ -32,6 +27,7 @@ class DialogManager:
             dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | 
                             Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
             dlg.show()
+            
             
             # เก็บ reference
             self.open_dialogs.append(dlg)
@@ -97,10 +93,8 @@ class DialogManager:
     
     def show_loading_dialog(self, message="Loading..."):
         """แสดง Loading Dialog
-        
         Args:
             message (str): ข้อความที่แสดงใน loading dialog
-            
         Returns:
             tuple: (dialog, loading_widget)
         """
@@ -261,6 +255,15 @@ class DialogManager:
         except Exception as e:
             print(f"Error cleaning up dialog: {e}")
     
+    # def on_sms_received(self, raw_signal: str, raw_log_line: str):
+    #     # 1) ดึงเบอร์ก่อน '|' → "+66653988461"
+    #     raw_phone = raw_signal.split("|", 1)[0].strip()
+    #     # 2) normalize ให้เป็น "0653988461"
+    #     sender = normalize_phone_number(raw_phone)
+ 
+    #      # บันทึกลง CSV
+    #     log_sms_inbox(sender, message, status="รับเข้า (real-time)")
+
     def close_all_dialogs(self):
         """ปิด dialogs ทั้งหมด"""
         try:

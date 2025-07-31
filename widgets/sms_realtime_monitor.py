@@ -292,7 +292,7 @@ class SmsRealtimeMonitor(QDialog):
                 self.append_to_display(error_msg)
     
     def process_cmt_message(self, header, message_hex):
-        """ประมวลผลข้อความ CMT - รองรับภาษาไทย"""
+        """ประมวลผลข้อความ CMT - บังคับใช้วันที่ปัจจุบัน"""
         try:
             # แยกข้อมูลจาก header
             match = re.match(r'\+CMT: "([^"]*)","","([^"]+)"', header)
@@ -300,19 +300,40 @@ class SmsRealtimeMonitor(QDialog):
                 raise ValueError("Invalid CMT header format")
             
             sender_ucs2 = match.group(1)
-            datetime_str = match.group(2)
+            datetime_str = match.group(2)  # ยังเป็น 25/07/25,14:39:05+28
             
             # แปลงข้อมูล
             sender = decode_ucs2(sender_ucs2)
             message = decode_ucs2(message_hex)
             
+            print(f"🔍 DEBUG CMT: Original datetime = '{datetime_str}'")
+            
+            # ✅ บังคับใช้วันที่ปัจจุบันแทน
+            now = datetime.now()
+            current_date = now.strftime("%d/%m/%Y")  # 30/07/2025
+            
+            # แยกเฉพาะเวลาจาก datetime_str เดิม
+            if "," in datetime_str:
+                _, time_part = datetime_str.split(",", 1)
+                if "+" in time_part:
+                    time_only = time_part.split("+", 1)[0]
+                else:
+                    time_only = time_part
+            else:
+                time_only = now.strftime("%H:%M:%S")  # ใช้เวลาปัจจุบัน
+            
+            # สร้าง datetime_str ใหม่ด้วยวันที่ปัจจุบัน
+            corrected_datetime = f"{current_date},{time_only}+07"
+            
+            print(f"✅ DEBUG CMT: Corrected datetime = '{corrected_datetime}'")
+            
             self.received_count += 1
             
             # แสดงผลใน monitor
-            self.append_to_display(f"[NEW SMS] {datetime_str}")
+            self.append_to_display(f"[NEW SMS] {corrected_datetime}")
             self.append_to_display(f"  From: {sender}")
             self.append_to_display(f"  Message: {message}")
-            self.append_to_display(f"  Raw Hex: {message_hex}")
+            self.append_to_display(f"  Original time: {datetime_str}")
             
             # ตรวจสอบว่าเป็นภาษาไทยหรือไม่
             if any('\u0e00' <= char <= '\u0e7f' for char in message):
@@ -320,13 +341,13 @@ class SmsRealtimeMonitor(QDialog):
             
             self.append_to_display("-" * 50)
             
-            # บันทึกลง CSV
-            if self.save_to_csv(sender, message, datetime_str):
+            # บันทึกลง CSV ด้วยวันที่ปัจจุบัน
+            if self.save_to_csv(sender, message, corrected_datetime):
                 self.saved_count += 1
-                self.append_to_display(f"[LOG] Saved to CSV successfully")
+                self.append_to_display(f"[LOG] Saved to CSV with current date")
             
             # ส่ง signal ไปยังหน้าหลัก
-            self.sms_received.emit(sender, message, datetime_str)
+            self.sms_received.emit(sender, message, corrected_datetime)
             self.log_updated.emit()
             
             self.update_stats()
@@ -337,6 +358,59 @@ class SmsRealtimeMonitor(QDialog):
             error_msg = f"[ERROR] Processing SMS: {e}"
             self.append_to_display(error_msg)
             raise
+
+    def update_old_dates_to_current():
+        """อัพเดทข้อมูลเก่าวันที่ 25/07/25 ให้เป็น 30/07/2025"""
+        try:
+            from services.sms_log import get_log_file_path
+            log_file = get_log_file_path("sms_inbox_log.csv")
+            
+            if not os.path.exists(log_file):
+                print("ไม่มีไฟล์ log")
+                return
+            
+            # อ่านข้อมูลเดิม
+            updated_rows = []
+            current_date = datetime.now().strftime("%d/%m/%Y")  # 30/07/2025
+            
+            with open(log_file, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                header = next(reader)  # อ่าน header
+                updated_rows.append(header)
+                
+                for row in reader:
+                    if len(row) >= 4:
+                        timestamp, phone, message, status = row[:4]
+                        
+                        # ตรวจสอบว่าเป็นวันที่ 25/07/25 หรือไม่
+                        if '"25/07/25,' in timestamp or '25/07/25,' in timestamp:
+                            print(f"🔄 Updating old date: {timestamp}")
+                            
+                            # แยกเวลา
+                            clean_timestamp = timestamp.strip('"')
+                            if ',' in clean_timestamp:
+                                _, time_part = clean_timestamp.split(',', 1)
+                                new_timestamp = f'"{current_date},{time_part}"'
+                                
+                                updated_rows.append([new_timestamp, phone, message, status])
+                                print(f"✅ Updated to: {new_timestamp}")
+                            else:
+                                updated_rows.append(row)  # เก็บเดิม
+                        else:
+                            updated_rows.append(row)  # เก็บเดิม
+            
+            # เขียนข้อมูลใหม่
+            with open(log_file, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerows(updated_rows)
+            
+            print(f"✅ Updated log file successfully!")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error updating dates: {e}")
+            return False
+
 
     # ==================== 5. CSV LOGGING ====================
     def save_to_csv(self, sender, message, datetime_str):

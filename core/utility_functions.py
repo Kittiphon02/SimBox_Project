@@ -18,28 +18,42 @@ def list_serial_ports():
     return [(p.device, p.description) for p in serial.tools.list_ports.comports()]
 
 
-def normalize_phone_number(phone):
-    """ปรับรูปแบบเบอร์โทรศัพท์ให้เป็นมาตรฐาน
-    
-    Args:
-        phone (str): เบอร์โทรศัพท์ที่ต้องการปรับรูปแบบ
-        
-    Returns:
-        str: เบอร์โทรศัพท์ที่ปรับรูปแบบแล้ว
-    """
-    if not phone:
+def normalize_phone_number(raw: str) -> str:
+    """แปลงเบอร์โทรให้ถูกต้อง เช่น +66653988461 → 0653988461"""
+    if not raw:
         return ""
     
-    # ลบ - และ space
-    phone = phone.replace('-', '').replace(' ', '')
+    raw = str(raw).strip()
+    # ถ้ามี payload ต่อหลังเบอร์ให้ตัดทิ้ง (เช่น "+66653988461|0E...") 
+    if "|" in raw:
+        raw = raw.split("|", 1)[0]
+    print(f"🔍 DEBUG normalize: Input = '{raw}'")
     
-    # แปลงรูปแบบ +66 หรือ 66 ให้เป็น 0
-    if phone.startswith('+66'):
-        phone = '0' + phone[3:]
-    elif phone.startswith('66'):
-        phone = '0' + phone[2:]
+    # ลบอักขระพิเศษ
+    raw = raw.replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
     
-    return phone
+    # แปลงรูปแบบต่างๆ
+    if raw.startswith("+66"):
+        raw = "0" + raw[3:]
+        print(f"🔍 DEBUG normalize: After +66 conversion = '{raw}'")
+    elif raw.startswith("66") and len(raw) > 10:
+        raw = "0" + raw[2:]
+        print(f"🔍 DEBUG normalize: After 66 conversion = '{raw}'")
+    
+    # เก็บแค่ตัวเลข
+    digits = ''.join(filter(str.isdigit, raw))
+    print(f"🔍 DEBUG normalize: Digits only = '{digits}'")
+    
+    # ตรวจสอบความยาว
+    if len(digits) >= 10:
+        result = digits[-10:]  # เอา 10 หลักสุดท้าย
+    elif len(digits) >= 9:
+        result = "0" + digits[-9:]  # เติม 0 ข้างหน้าถ้าขาด
+    else:
+        result = digits
+    
+    print(f"✅ DEBUG normalize: Final result = '{result}'")
+    return result
 
 
 def format_datetime_for_display(dt_str):
