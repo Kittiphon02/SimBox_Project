@@ -5,7 +5,8 @@
 
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QMessageBox
 from PyQt5.QtCore import Qt, QTimer
-
+from widgets.sms_log_dialog import SmsLogDialog
+from widgets.sms_realtime_monitor import SmsRealtimeMonitor
 
 class DialogManager:
     """จัดการ dialogs และหน้าต่างต่างๆ"""
@@ -27,8 +28,11 @@ class DialogManager:
             dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | 
                             Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
             dlg.show()
-            
-            
+            # — เพิ่มบรรทัดนี้หลัง dlg.show() —
+            mon = getattr(self.parent, 'sms_monitor_dialog', None)
+            if isinstance(mon, SmsRealtimeMonitor):
+                mon.log_updated.connect(dlg.load_log)
+
             # เก็บ reference
             self.open_dialogs.append(dlg)
             dlg.finished.connect(lambda: self.cleanup_dialog(dlg))
@@ -60,8 +64,7 @@ class DialogManager:
                 self.parent.sms_monitor_dialog.raise_()
                 self.parent.sms_monitor_dialog.activateWindow()
                 return self.parent.sms_monitor_dialog
-            
-            from widgets.sms_realtime_monitor import SmsRealtimeMonitor
+           
             sms_monitor_dialog = SmsRealtimeMonitor(port, baudrate, self.parent, serial_thread=serial_thread)
             
             sms_monitor_dialog.setModal(False)
@@ -92,13 +95,22 @@ class DialogManager:
             return None
     
     def show_loading_dialog(self, message="Loading..."):
-        """แสดง Loading Dialog
+        """แสดง Loading Dialog - ป้องกัน None error
         Args:
             message (str): ข้อความที่แสดงใน loading dialog
         Returns:
             tuple: (dialog, loading_widget)
         """
         try:
+            # ⭐ ปิด loading dialog เก่าก่อน (ถ้ามี)
+            if hasattr(self.parent, 'loading_dialog') and self.parent.loading_dialog:
+                try:
+                    self.parent.loading_dialog.close()
+                except:
+                    pass
+                self.parent.loading_dialog = None
+                self.parent.loading_widget = None
+            
             from widgets.loading_widget import LoadingWidget
             from styles import LoadingWidgetStyles
             
@@ -112,39 +124,57 @@ class DialogManager:
             layout = QVBoxLayout()
             loading_widget = LoadingWidget(message)
             
-            # เชื่อมต่อ signal
+            # ⭐ เชื่อมต่อ signal อย่างปลอดภัย
             if hasattr(self.parent, 'on_sms_sending_finished'):
-                loading_widget.finished.connect(self.parent.on_sms_sending_finished)
+                try:
+                    loading_widget.finished.connect(self.parent.on_sms_sending_finished)
+                except Exception as e:
+                    print(f"Warning: Could not connect loading widget signal: {e}")
             
             layout.addWidget(loading_widget)
             loading_dialog.setLayout(layout)
+            
+            # ⭐ เก็บ reference อย่างปลอดภัย
+            self.parent.loading_dialog = loading_dialog
+            self.parent.loading_widget = loading_widget
+            
             loading_dialog.show()
             loading_widget.start_sending()
-            
-            # เก็บ reference
-            if hasattr(self.parent, 'loading_dialog'):
-                self.parent.loading_dialog = loading_dialog
-            if hasattr(self.parent, 'loading_widget'):
-                self.parent.loading_widget = loading_widget
             
             return loading_dialog, loading_widget
             
         except Exception as e:
             self.show_error_message("Loading Dialog Error", f"Failed to create loading dialog: {e}")
+            
+            # ⭐ ตั้งค่า None เพื่อป้องกัน error
+            if hasattr(self.parent, 'loading_dialog'):
+                self.parent.loading_dialog = None
+            if hasattr(self.parent, 'loading_widget'):
+                self.parent.loading_widget = None
+                
             return None, None
     
     def close_loading_dialog(self):
-        """ปิด Loading Dialog"""
+        """ปิด Loading Dialog - ป้องกัน None error"""
         try:
             if hasattr(self.parent, 'loading_dialog') and self.parent.loading_dialog:
-                self.parent.loading_dialog.close()
-                self.parent.loading_dialog = None
-                
+                try:
+                    self.parent.loading_dialog.close()
+                except Exception as e:
+                    print(f"Warning: Error closing loading dialog: {e}")
+                finally:
+                    self.parent.loading_dialog = None
+                    
             if hasattr(self.parent, 'loading_widget'):
                 self.parent.loading_widget = None
                 
         except Exception as e:
             print(f"Error closing loading dialog: {e}")
+            # ⭐ บังคับรีเซ็ต
+            if hasattr(self.parent, 'loading_dialog'):
+                self.parent.loading_dialog = None
+            if hasattr(self.parent, 'loading_widget'):
+                self.parent.loading_widget = None
     
     def show_non_blocking_message(self, title, message, icon=QMessageBox.Information):
         """แสดง message box แบบ non-blocking

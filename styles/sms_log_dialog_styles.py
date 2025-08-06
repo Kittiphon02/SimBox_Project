@@ -363,26 +363,22 @@ class SmsLogDialogStyles:
     # ==================== SEARCH SECTION STYLES ====================
     @staticmethod
     def get_search_input_style():
-        """Search Input Style - ช่องค้นหาโทนแดง"""
+        """สไตล์สำหรับ Search Input Box"""
         return """
             QLineEdit {
-                font-size: 14px;
+                border: 2px solid #bdc3c7;
+                border-radius: 8px;
                 padding: 8px 12px;
-                border: 2px solid #dc3545;
-                border-radius: 6px;
+                font-size: 14px;
                 background-color: white;
-                color: #495057;
-            }
-            QLineEdit:hover {
-                border-color: #c82333;
-                background-color: #fff5f5;
+                selection-background-color: #3498db;
             }
             QLineEdit:focus {
-                border-color: #a71e2a;
-                outline: none;
+                border: 2px solid #3498db;
+                box-shadow: 0 0 8px rgba(52, 152, 219, 0.3);
             }
-            QLineEdit::placeholder {
-                color: #adb5bd;
+            QLineEdit:hover {
+                border: 2px solid #85c1e9;
             }
         """
     
@@ -509,3 +505,37 @@ class SmsLogDialogStyles:
             'text_primary': '#721c24',
             'text_secondary': '#6c757d'
         }
+    
+    @staticmethod
+    def get_warning_button_style():
+        """สไตล์ปุ่ม Warning (สีส้ม) สำหรับ Export Search"""
+        return """
+            QPushButton {
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                        stop: 0 #f39c12, stop: 1 #e67e22);
+                border: 2px solid #d35400;
+                border-radius: 8px;
+                color: white;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 8px 16px;
+                min-width: 100px;
+                min-height: 32px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                        stop: 0 #e67e22, stop: 1 #d35400);
+                border: 2px solid #bf7030;
+                box-shadow: 0 4px 8px rgba(211, 84, 0, 0.3);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                        stop: 0 #d35400, stop: 1 #bf7030);
+                border: 2px solid #a0522d;
+            }
+            QPushButton:disabled {
+                background: #bdc3c7;
+                border: 2px solid #95a5a6;
+                color: #7f8c8d;
+            }
+        """

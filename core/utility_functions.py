@@ -126,10 +126,8 @@ def encode_text_to_ucs2(text):
 
 def decode_ucs2_to_text(hex_str):
     """แปลง UCS2 hex string เป็นข้อความ
-    
     Args:
-        hex_str (str): UCS2 hex string
-        
+        hex_str (str): UCS2 hex string     
     Returns:
         str: ข้อความที่แปลงแล้ว
     """
@@ -137,8 +135,7 @@ def decode_ucs2_to_text(hex_str):
         return ""
         
     try:
-        # ลบช่องว่างและปรับความยาว
-        hex_str = hex_str.replace(" ", "").upper()
+        hex_str = hex_str.replace(" ", "")
         
         if len(hex_str) % 2 != 0:
             hex_str = hex_str.ljust((len(hex_str) + 3) // 4 * 4, '0')
@@ -146,16 +143,17 @@ def decode_ucs2_to_text(hex_str):
         # แปลงเป็น bytes และ decode
         bytes_data = bytes.fromhex(hex_str)
         
-        # ลอง decode หลายวิธี
-        for encoding in ['utf-16-be', 'utf-16-le', 'utf-8']:
+       # decode ด้วย UCS2 (utf-16-BE) ก่อน ถ้า fail ค่อยลอง LE
+        for encoding in ('utf-16-be', 'utf-16-le'):
             try:
-                return bytes_data.decode(encoding, errors='strict')
-            except UnicodeDecodeError:
+                # ลบ null-char ท้ายด้วย
+                return bytes_data.decode(encoding).rstrip('\x00')
+            except Exception:
                 continue
         
-        # fallback
-        return bytes_data.decode('utf-16-be', errors='replace')
-        
+        # fallback: ทนๆ decode BE แล้ว replace ตัว decode ไม่ได้
+        return bytes_data.decode('utf-16-be', errors='replace').rstrip('\x00')
+         
     except Exception as e:
         print(f"Error decoding UCS2: {e}")
         return hex_str
@@ -163,10 +161,8 @@ def decode_ucs2_to_text(hex_str):
 
 def get_carrier_from_imsi(imsi):
     """ระบุผู้ให้บริการจาก IMSI
-    
     Args:
         imsi (str): IMSI number
-        
     Returns:
         str: ชื่อผู้ให้บริการ
     """

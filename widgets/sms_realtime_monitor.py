@@ -11,6 +11,7 @@ import os
 import csv
 from datetime import datetime
 from services.sms_log import log_sms_inbox
+from core.utility_functions import decode_ucs2_to_text as decode_ucs2
 
 # ==================== IMPORT NEW STYLES ====================
 from styles import SmsRealtimeMonitorStyles
@@ -18,42 +19,55 @@ from styles import SmsRealtimeMonitorStyles
 
 # ==================== UTILITY FUNCTIONS ====================
 def decode_ucs2(hex_str):
-    """แปลง UCS2 hex string เป็น text - รองรับภาษาไทย"""
+    """แปลง UCS2 hex string เป็น text - Fixed spacing issues"""
     if not hex_str:
         return ""
         
-    hex_str = hex_str.replace(" ", "")
+    hex_str = hex_str.replace(" ", "").upper()
     
     try:
         # ลองแปลงแบบ UCS2 (UTF-16 BE) ก่อน
         byte_data = bytes.fromhex(hex_str)
-        decoded_text = byte_data.decode("utf-16-be")
-        return decoded_text
         
-    except ValueError as e:
-        # ถ้า hex string ไม่ถูกต้อง
+        for encoding in ['utf-16-be', 'utf-16-le']:
+            try:
+                decoded_text = byte_data.decode(encoding)
+                
+                # ✅ แก้ไขการจัดการตัวอักษรพิเศษ
+                cleaned_text = ""
+                for char in decoded_text:
+                    char_code = ord(char)
+                    if char_code == 0:  # null character
+                        continue
+                    elif char_code < 32 and char_code not in [9, 10, 13]:  # control characters
+                        cleaned_text += " "  # แทนที่ด้วยช่องว่าง
+                    else:
+                        cleaned_text += char
+                
+                # ลบช่องว่างซ้ำๆ
+                import re
+                cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
+                
+                if cleaned_text:
+                    return cleaned_text
+                    
+            except UnicodeDecodeError:
+                continue
+                
+    except ValueError:
+        # ถ้า hex string ไม่ถูกต้อง ลอง UTF-8
         try:
-            # ลองแปลงแบบ UTF-8
             byte_data = bytes.fromhex(hex_str)
             decoded_text = byte_data.decode("utf-8", errors='replace')
-            return decoded_text
-        except Exception:
-            return hex_str  # คืนค่า hex string เดิมถ้าแปลงไม่ได้
-            
-    except UnicodeDecodeError as e:
-        # ถ้าแปลง Unicode ไม่ได้
-        try:
-            # ลองใช้ errors='replace' เพื่อแทนที่ตัวอักษรที่แปลงไม่ได้
-            byte_data = bytes.fromhex(hex_str)
-            decoded_text = byte_data.decode("utf-16-be", errors='replace')
-            return decoded_text
+            return decoded_text.replace('\x00', '').strip()
         except Exception:
             return hex_str
             
     except Exception as e:
-        # กรณีอื่นๆ
         print(f"Error decoding UCS2: {e}")
         return hex_str
+    
+    return hex_str
 
 
 # ==================== MAIN CLASS ====================
@@ -292,7 +306,7 @@ class SmsRealtimeMonitor(QDialog):
                 self.append_to_display(error_msg)
     
     def process_cmt_message(self, header, message_hex):
-        """ประมวลผลข้อความ CMT - บังคับใช้วันที่ปัจจุบัน"""
+        """ประมวลผลข้อความ CMT - Enhanced decoding"""
         try:
             # แยกข้อมูลจาก header
             match = re.match(r'\+CMT: "([^"]*)","","([^"]+)"', header)
@@ -300,17 +314,21 @@ class SmsRealtimeMonitor(QDialog):
                 raise ValueError("Invalid CMT header format")
             
             sender_ucs2 = match.group(1)
-            datetime_str = match.group(2)  # ยังเป็น 25/07/25,14:39:05+28
-            
-            # แปลงข้อมูล
-            sender = decode_ucs2(sender_ucs2)
-            message = decode_ucs2(message_hex)
+            datetime_str = match.group(2)
             
             print(f"🔍 DEBUG CMT: Original datetime = '{datetime_str}'")
+            print(f"🔍 DEBUG CMT: Sender UCS2 = '{sender_ucs2}'")
+            print(f"🔍 DEBUG CMT: Message hex = '{message_hex[:50]}{'...' if len(message_hex) > 50 else ''}'")
+            
+            # แปลง sender - ลองหลายวิธี
+            sender = self._decode_sender_safely(sender_ucs2)
+            
+            # แปลงข้อความ - Enhanced decoding
+            message = self._decode_message_safely(message_hex)
             
             # ✅ บังคับใช้วันที่ปัจจุบันแทน
             now = datetime.now()
-            current_date = now.strftime("%d/%m/%Y")  # 30/07/2025
+            current_date = now.strftime("%d/%m/%Y")  # 31/07/2025
             
             # แยกเฉพาะเวลาจาก datetime_str เดิม
             if "," in datetime_str:
@@ -325,6 +343,8 @@ class SmsRealtimeMonitor(QDialog):
             # สร้าง datetime_str ใหม่ด้วยวันที่ปัจจุบัน
             corrected_datetime = f"{current_date},{time_only}+07"
             
+            print(f"✅ DEBUG CMT: Decoded sender = '{sender}'")
+            print(f"✅ DEBUG CMT: Decoded message = '{message}'")
             print(f"✅ DEBUG CMT: Corrected datetime = '{corrected_datetime}'")
             
             self.received_count += 1
@@ -333,18 +353,21 @@ class SmsRealtimeMonitor(QDialog):
             self.append_to_display(f"[NEW SMS] {corrected_datetime}")
             self.append_to_display(f"  From: {sender}")
             self.append_to_display(f"  Message: {message}")
-            self.append_to_display(f"  Original time: {datetime_str}")
             
             # ตรวจสอบว่าเป็นภาษาไทยหรือไม่
             if any('\u0e00' <= char <= '\u0e7f' for char in message):
                 self.append_to_display(f"  [THAI] Thai language detected")
+            
+            # ตรวจสอบว่าเป็นภาษาอังกฤษและมีปัญหาการแสดงผลหรือไม่
+            if message.isupper() and ' ' not in message and len(message) > 10:
+                self.append_to_display(f"  [WARNING] Message may have decode issues")
             
             self.append_to_display("-" * 50)
             
             # บันทึกลง CSV ด้วยวันที่ปัจจุบัน
             if self.save_to_csv(sender, message, corrected_datetime):
                 self.saved_count += 1
-                self.append_to_display(f"[LOG] Saved to CSV with current date")
+                self.log_updated.emit()
             
             # ส่ง signal ไปยังหน้าหลัก
             self.sms_received.emit(sender, message, corrected_datetime)
@@ -357,7 +380,133 @@ class SmsRealtimeMonitor(QDialog):
             self.update_stats()
             error_msg = f"[ERROR] Processing SMS: {e}"
             self.append_to_display(error_msg)
-            raise
+
+    def _decode_message_safely(self, message_hex):
+        """แปลงข้อความ UCS2 อย่างปลอดภัย - Fixed spacing"""
+        if not message_hex:
+            return ""
+        
+        try:
+            message_clean = message_hex.strip().replace('"', '').replace(' ', '')
+            print(f"🔍 DEBUG Message: Input hex = '{message_clean[:50]}...'")
+            
+            # ใช้ฟังก์ชัน decode_ucs2 ที่แก้ไขแล้ว
+            decoded = decode_ucs2(message_clean)
+            
+            # ✅ เพิ่มการตรวจสอบและแก้ไขข้อความที่ติดกัน
+            if decoded and decoded != message_clean:
+                # ตรวจหาคำที่ติดกัน (เช่น "Badboygirl" -> "Bad boy girl")
+                fixed_message = self._fix_concatenated_words(decoded)
+                print(f"✅ DEBUG Message: Final = '{fixed_message}'")
+                return fixed_message
+            
+            print(f"⚠️ DEBUG Message: Using original = '{decoded}'")
+            return decoded
+            
+        except Exception as e:
+            print(f"❌ DEBUG Message: Error = {e}")
+            return message_hex
+    
+    def _fix_concatenated_words(self, text):
+        """แก้ไขคำที่ติดกันในข้อความ - Simple word separation"""
+        if not text:
+            return text
+        
+        try:
+            # ✅ แยกคำที่ติดกันด้วยกฎง่ายๆ
+            import re
+            
+            # กรณี: ตัวเล็กตัวใหญ่ติดกัน เช่น "badBoy" -> "bad Boy"
+            text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+            
+            # กรณี: ตัวเลขกับตัวอักษร เช่น "hello123world" -> "hello 123 world"
+            text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text)
+            text = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', text)
+            
+            # กรณี: คำที่รู้จักติดกัน (สามารถเพิ่มได้)
+            common_fixes = {
+                'badboy': 'bad boy',
+                'goodgirl': 'good girl',
+                'badgirl': 'bad girl',
+                'goodboy': 'good boy',
+                'hellothere': 'hello there',
+                'thankyou': 'thank you',
+                'howareyou': 'how are you',
+            }
+            
+            text_lower = text.lower()
+            for wrong, correct in common_fixes.items():
+                if wrong in text_lower:
+                    # แทนที่โดยรักษาตัวพิมพ์เดิม
+                    text = re.sub(re.escape(wrong), correct, text, flags=re.IGNORECASE)
+            
+            # ลบช่องว่างซ้ำ
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            return text
+            
+        except Exception as e:
+            print(f"Error fixing concatenated words: {e}")
+            return text
+
+    def _decode_sender_safely(self, sender_ucs2):
+        """แปลง sender UCS2 อย่างปลอดภัย - Enhanced version"""
+        if not sender_ucs2:
+            return "Unknown"
+        
+        sender_clean = sender_ucs2.strip().replace('"', '').replace(' ', '')
+        print(f"🔍 DEBUG Sender: Input = '{sender_clean}'")
+        
+        try:
+            # ตรวจสอบว่าเป็น hex string หรือไม่
+            if len(sender_clean) > 10 and all(c in '0123456789ABCDEFabcdef' for c in sender_clean):
+                print(f"🔍 DEBUG Sender: Detected as UCS2 hex")
+                
+                # ลองแปลงจาก UCS2
+                decoded = decode_ucs2(sender_clean)
+                print(f"🔍 DEBUG Sender: UCS2 decoded = '{decoded}'")
+                
+                # ตรวจสอบว่าผลลัพธ์เป็นเบอร์โทรหรือไม่
+                if decoded and decoded != sender_clean:
+                    # ลบตัวอักษรที่ไม่ใช่เบอร์โทร
+                    phone_chars = ''.join(c for c in decoded if c.isdigit() or c in ['+', '-', ' ', '(', ')'])
+                    if phone_chars and (phone_chars.startswith('+') or len(''.join(filter(str.isdigit, phone_chars))) >= 9):
+                        print(f"✅ DEBUG Sender: Valid phone detected = '{phone_chars}'")
+                        return phone_chars
+                
+                # ถ้าแปลงไม่ได้หรือไม่เหมือนเบอร์โทร ลองวิธีอื่น
+                try:
+                    # ลองแปลงแบบ manual (ทีละ 4 hex chars)
+                    manual_decoded = ""
+                    for i in range(0, len(sender_clean), 4):
+                        hex_char = sender_clean[i:i+4]
+                        if len(hex_char) == 4:
+                            try:
+                                char_code = int(hex_char, 16)
+                                if 32 <= char_code <= 126:  # ASCII printable
+                                    manual_decoded += chr(char_code)
+                            except ValueError:
+                                continue
+                    
+                    if manual_decoded:
+                        print(f"✅ DEBUG Sender: Manual decode = '{manual_decoded}'")
+                        return manual_decoded
+                        
+                except Exception as e:
+                    print(f"❌ DEBUG Sender: Manual decode error: {e}")
+            
+            # ถ้าไม่ใช่ hex หรือแปลงไม่ได้ ตรวจสอบว่าเป็นเบอร์โทรปกติหรือไม่
+            if all(c.isdigit() or c in ['+', '-', ' ', '(', ')'] for c in sender_clean):
+                print(f"✅ DEBUG Sender: Plain phone number = '{sender_clean}'")
+                return sender_clean
+            
+            # fallback - ใช้ตัวเดิม
+            print(f"⚠️ DEBUG Sender: Using original = '{sender_clean}'")
+            return sender_clean
+                
+        except Exception as e:
+            print(f"❌ DEBUG Sender: Error in decode: {e}")
+            return sender_clean
 
     def update_old_dates_to_current():
         """อัพเดทข้อมูลเก่าวันที่ 25/07/25 ให้เป็น 30/07/2025"""

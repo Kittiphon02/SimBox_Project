@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from core.utility_functions import normalize_phone_number
 import pytz
+import portalocker
 
 def get_log_directory():
     """ดึง log directory จาก settings.json พร้อม fallback ให้ปลอดภัย"""
@@ -154,12 +155,6 @@ def log_sms_inbox(sender: str, message: str, status: str = "รับเข้�
 
     print(f"🔍 DEBUG log_sms_inbox: Using timestamp = {timestamp}")
 
-    # if sender:
-    #     sender = normalize_phone_number(sender)
-    # else:
-    #     print("❌ Sender is None or empty")
-    #     return False
-  
     if sender:
         # เก็บเบอร์จริงโดยตรง ไม่ผ่าน normalize
         sender = sender.strip()

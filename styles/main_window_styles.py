@@ -1,3 +1,8 @@
+# main_window_styles.py - โค้ดเต็มที่แก้ไขแล้ว
+
+from PyQt5.QtCore import QTimer, QPropertyAnimation, QRect, QEasingCurve, Qt
+from PyQt5.QtWidgets import QGraphicsOpacityEffect
+
 class MainWindowStyles:
     """สไตล์สำหรับหน้าต่างหลัก - โทนสีแดงทางการ"""
     
@@ -383,7 +388,7 @@ class MainWindowStyles:
     
     @staticmethod
     def get_help_button_style():
-        """Delete Button Style - ปุ่มลบโทนแดงสด"""
+        """Help Button Style - ปุ่มช่วยเหลือโทนเทา"""
         return """
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -521,3 +526,158 @@ class MainWindowStyles:
                     stop:0 #dc3545, stop:1 #c82333);
             }
         """
+
+    @staticmethod
+    def get_message_box_style():
+        """Message Box Style - กล่องข้อความข้างปุ่ม Sync (ใช้โทนสีแดงให้เข้ากับธีม)"""
+        return """
+            QLineEdit {
+                font-size: 14px;
+                padding: 8px 12px;
+                border-radius: 6px;
+                border: 2px solid #dc3545;
+                background-color: #fff;
+                color: #212529;
+                font-family: Arial, sans-serif;
+            }
+            QLineEdit:focus {
+                border: 2px solid #a71e2a;
+                background-color: #fff5f5;
+                outline: none;
+            }
+            QLineEdit:hover {
+                border: 2px solid #c82333;
+                background-color: #f8fbff;
+            }
+            QLineEdit::placeholder {
+                color: #95a5a6;
+                font-style: italic;
+            }
+            QLineEdit:disabled {
+                background-color: #ecf0f1;
+                color: #7f8c8d;
+                border: 2px solid #bdc3c7;
+            }
+        """
+    
+    # เพิ่มลงในไฟล์ main_window_styles.py
+
+    @staticmethod
+    def get_sms_inbox_counter_style():
+        """SMS Inbox Counter Style - แสดงจำนวน SMS ใน inbox"""
+        return """
+            QLabel {
+                font-size: 14px;
+                font-weight: 600;
+                padding: 8px 12px;
+                border-radius: 6px;
+                border: 2px solid #dc3545;
+                background-color: #fff5f5;
+                color: #721c24;
+                text-align: center;
+            }
+            QLabel:hover {
+                background-color: #f8d7da;
+                border: 2px solid #c82333;
+            }
+        """
+
+    @staticmethod
+    def get_sms_inbox_counter_zero_style():
+        """SMS Inbox Counter Style - เมื่อไม่มี SMS"""
+        return """
+            QLabel {
+                font-size: 14px;
+                font-weight: 600;
+                padding: 8px 12px;
+                border-radius: 6px;
+                border: 2px solid #6c757d;
+                background-color: #f8f9fa;
+                color: #495057;
+                text-align: center;
+            }
+        """
+
+    @staticmethod
+    def get_sms_inbox_counter_high_style():
+        """SMS Inbox Counter Style - เมื่อมี SMS เยอะ (>10)"""
+        return """
+            QLabel {
+                font-size: 14px;
+                font-weight: 700;
+                padding: 8px 12px;
+                border-radius: 6px;
+                border: 2px solid #dc3545;
+                background-color: #f8d7da;
+                color: #721c24;
+                text-align: center;
+            }
+            QLabel:hover {
+                background-color: #f5c6cb;
+                border: 2px solid #c82333;
+            }
+        """
+    
+    @staticmethod
+    def get_sms_inbox_badge_style():
+        """SMS Inbox Badge Style - แบบปุ่มฟ้า"""
+        return """
+            QLabel {
+                background-color: #3498db;
+                color: white;
+                border: 2px solid #2980b9;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 600;
+                padding: 6px 8px;
+            }
+            QLabel:hover {
+                background-color: #2980b9;
+            }
+        """
+
+    @staticmethod
+    def get_sms_count_badge_style():
+        """SMS Count Badge Style - แบดจ์แดงกลม"""
+        return """
+            QLabel {
+                background-color: #e74c3c;
+                color: white;
+                border: 2px solid white;
+                border-radius: 14px;
+                font-size: 12px;
+                font-weight: bold;
+                text-align: center;
+            }
+        """
+
+    @staticmethod
+    def get_sms_count_badge_high_style():
+        """SMS Count Badge Style - เมื่อมีจำนวนเยอะ"""
+        return """
+            QLabel {
+                background-color: #c0392b;
+                color: white;
+                border: 2px solid white;
+                border-radius: 14px;
+                font-size: 11px;
+                font-weight: bold;
+                text-align: center;
+            }
+        """
+
+    @staticmethod
+    def get_sms_inbox_badge_inactive_style():
+        """SMS Inbox Badge Style - เมื่อไม่มี SMS"""
+        return """
+            QLabel {
+                background-color: #95a5a6;
+                color: white;
+                border: 2px solid #7f8c8d;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 600;
+                padding: 6px 8px;
+            }
+        """
+

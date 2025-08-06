@@ -1,4 +1,4 @@
-# loading_widget.py
+# loading_widget.py - Enhanced error handling
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QFrame
 )
@@ -84,7 +84,33 @@ class LoadingWidget(QWidget):
         status_frame.setLayout(status_layout)
         layout.addWidget(status_frame)
         
-        # Error Label (hidden initially)
+        # ⭐ Error Details Frame (hidden initially)
+        self.error_frame = QFrame()
+        self.error_frame.setFrameStyle(QFrame.Box)
+        error_layout = QVBoxLayout()
+        
+        self.error_title = QLabel("❌ ข้อผิดพลาดในการส่ง SMS")
+        self.error_title.setAlignment(Qt.AlignCenter)
+        self.error_title.setFont(QFont("Arial", 12, QFont.Bold))
+        error_layout.addWidget(self.error_title)
+        
+        self.error_detail = QLabel("")
+        self.error_detail.setAlignment(Qt.AlignCenter)
+        self.error_detail.setFont(QFont("Arial", 10))
+        self.error_detail.setWordWrap(True)
+        error_layout.addWidget(self.error_detail)
+        
+        self.error_suggestion = QLabel("")
+        self.error_suggestion.setAlignment(Qt.AlignCenter)
+        self.error_suggestion.setFont(QFont("Arial", 9))
+        self.error_suggestion.setWordWrap(True)
+        error_layout.addWidget(self.error_suggestion)
+        
+        self.error_frame.setLayout(error_layout)
+        self.error_frame.hide()  # เริ่มต้นซ่อนไว้
+        layout.addWidget(self.error_frame)
+        
+        # Error Label (old - for compatibility)
         self.error_label = QLabel("")
         self.error_label.setAlignment(Qt.AlignCenter)
         self.error_label.setFont(QFont("Arial", 12, QFont.Bold))
@@ -107,6 +133,33 @@ class LoadingWidget(QWidget):
         self.percentage_label.setStyleSheet(LoadingWidgetStyles.get_percentage_label_style())
         self.error_label.setStyleSheet(LoadingWidgetStyles.get_error_label_style())
         
+        # ⭐ Error Frame Styles
+        self.error_frame.setStyleSheet("""
+            QFrame {
+                background-color: #fff5f5;
+                border: 2px solid #dc3545;
+                border-radius: 8px;
+                padding: 10px;
+                margin: 5px;
+            }
+        """)
+        self.error_title.setStyleSheet(LoadingWidgetStyles.get_error_label_style())
+        self.error_detail.setStyleSheet("""
+            QLabel {
+                color: #721c24;
+                font-size: 11px;
+                margin: 5px;
+            }
+        """)
+        self.error_suggestion.setStyleSheet("""
+            QLabel {
+                color: #6c757d;
+                font-size: 9px;
+                font-style: italic;
+                margin: 5px;
+            }
+        """)
+        
         # Status Frame and Label
         self.status_frame.setStyleSheet(LoadingWidgetStyles.get_status_frame_style())
         self.status_label.setStyleSheet(LoadingWidgetStyles.get_status_label_style())
@@ -117,6 +170,7 @@ class LoadingWidget(QWidget):
     def start_sending(self):
         self.is_loading = True
         self.error_label.hide()
+        self.error_frame.hide()  # ⭐ ซ่อน error frame
         self.progress = 0
         self.current_step = 0
         self.progress_bar.setValue(0)
@@ -152,6 +206,7 @@ class LoadingWidget(QWidget):
         self.timer.stop()
         self.is_loading = False
         self.error_label.hide()
+        self.error_frame.hide()  # ⭐ ซ่อน error frame
         self.progress_bar.setValue(100)
         self.percentage_label.setText("100%")
         self.status_label.setText("ส่งข้อความสำเร็จ!")
@@ -162,14 +217,79 @@ class LoadingWidget(QWidget):
         self.finished.emit(True)
     
     def complete_sending_error(self, error_msg):
+        """⭐ Enhanced error handling with detailed information"""
         self.timer.stop()
         self.is_loading = False
-        # แสดงข้อความผิดพลาด
-        self.error_label.setText("SMS ไม่สำเร็จ: " + error_msg)
-        self.error_label.show()
+        
+        # ซ่อน error label เก่า แสดง error frame ใหม่
+        self.error_label.hide()
+        
+        # แสดงข้อมูลข้อผิดพลาดแบบละเอียด
+        self._show_detailed_error(error_msg)
+        
         self.status_label.setText("เกิดข้อผิดพลาด")
         self.status_icon.setText("❌")
         
         # ใช้สไตล์ข้อผิดพลาด
         self.progress_bar.setStyleSheet(LoadingWidgetStyles.get_progress_bar_error_style())
         self.finished.emit(False)
+    
+    def _show_detailed_error(self, error_msg):
+        """⭐ แสดงข้อผิดพลาดแบบละเอียด"""
+        # แยกประเภทข้อผิดพลาดและให้คำแนะนำ
+        error_type, suggestion = self._categorize_error(error_msg)
+        
+        self.error_detail.setText(error_type)
+        self.error_suggestion.setText(suggestion)
+        self.error_frame.show()
+    
+    def _categorize_error(self, error_msg):
+        """⭐ จำแนกประเภทข้อผิดพลาดและให้คำแนะนำ"""
+        error_lower = error_msg.lower()
+        
+        if 'sim' in error_lower:
+            if 'ไม่มี' in error_msg or 'no sim' in error_lower:
+                return (
+                    "🔴 ไม่พบ SIM Card หรือ SIM ไม่พร้อมใช้งาน",
+                    "💡 แนะนำ: ตรวจสอบ SIM Card • คลิก 'Refresh Ports' • ลอง 'SIM Recovery'"
+                )
+            elif 'not ready' in error_lower or 'ไม่พร้อม' in error_msg:
+                return (
+                    "🟠 SIM Card ไม่พร้อมใช้งาน",
+                    "💡 แนะนำ: รอสักครู่แล้วลองใหม่ • คลิก 'SIM Recovery' • เช็คสัญญาณ"
+                )
+            else:
+                return (
+                    "🔴 SIM Card มีปัญหา",
+                    "💡 แนะนำ: ตรวจสอบ SIM Card • คลิก 'SIM Recovery' • เปลี่ยน SIM"
+                )
+        
+        elif 'serial' in error_lower or 'connection' in error_lower or 'เชื่อมต่อ' in error_msg:
+            return (
+                "🔴 การเชื่อมต่อขาดหาย",
+                "💡 แนะนำ: ตรวจสอบสาย USB • คลิก 'Refresh Ports' • เสียบใหม่"
+            )
+        
+        elif 'signal' in error_lower or 'network' in error_lower or 'สัญญาณ' in error_msg:
+            return (
+                "🟠 สัญญาณอ่อนหรือไม่มีเครือข่าย",
+                "💡 แนะนำ: ย้ายไปที่มีสัญญาณดี • เช็คเครือข่าย • ลองใหม่อีกครั้ง"
+            )
+        
+        elif 'timeout' in error_lower or 'หมดเวลา' in error_msg:
+            return (
+                "🟡 หมดเวลารอการตอบสนอง",
+                "💡 แนะนำ: ลองส่งใหม่ • ตรวจสอบสัญญาณ • รีสตาร์ทโมเด็ม"
+            )
+        
+        elif 'at+' in error_lower or 'command' in error_lower:
+            return (
+                "🔴 คำสั่ง AT ผิดพลาด",
+                "💡 แนะนำ: คลิก 'Refresh Ports' • เช็ค Baudrate • รีสตาร์ทโมเด็ม"
+            )
+        
+        else:
+            return (
+                f"🔴 {error_msg}",
+                "💡 แนะนำ: คลิก 'Refresh Ports' • ตรวจสอบการเชื่อมต่อ • ลองใหม่"
+            )
