@@ -166,24 +166,27 @@ class SimInfoWindow(QMainWindow):
         self.modem_group = modem_group
     
     def create_control_buttons(self, layout):
-        """สร้างปุ่มควบคุมต่างๆ - Updated version with SMS Inbox Badge"""
+        """สร้างปุ่มควบคุมต่างๆ - Updated version with improved Signal Quality button"""
         layout.addSpacing(16)
         
         button_width = 120
         
+        # ปุ่ม Refresh Ports
         self.btn_refresh = QPushButton("Refresh Ports")
         self.btn_refresh.setFixedWidth(button_width)
         layout.addWidget(self.btn_refresh)
         
+        # ปุ่ม ดูประวัติ SMS
         self.btn_smslog = QPushButton("ดูประวัติ SMS")
         self.btn_smslog.setFixedWidth(button_width)
         layout.addWidget(self.btn_smslog)
         
+        # ปุ่ม SMS Monitor
         self.btn_realtime_monitor = QPushButton("SMS Monitor")
         self.btn_realtime_monitor.setFixedWidth(button_width)
         layout.addWidget(self.btn_realtime_monitor)
 
-        # เพิ่มปุ่ม SIM Recovery
+        # ปุ่ม SIM Recovery
         self.btn_sim_recovery = QPushButton("SIM Recovery")
         self.btn_sim_recovery.setFixedWidth(button_width)
         self.btn_sim_recovery.clicked.connect(self.sim_recovery_manager.manual_sim_recovery)
@@ -208,14 +211,41 @@ class SimInfoWindow(QMainWindow):
             }
         """)
         layout.addWidget(self.btn_sim_recovery)
-
-        # เพิ่มปุ่ม Signal Quality Checker
+        
+        # ปุ่ม Signal Quality - ปรับแต่งใหม่
         self.btn_signal_quality = QPushButton("📶 Signal Quality")
-        self.btn_signal_quality.setFixedWidth(140)
-        self.btn_signal_quality.clicked.connect(self.show_signal_quality_checker)
+        self.btn_signal_quality.setFixedWidth(button_width + 20)  # กว้างขึ้นเล็กน้อย
+        self.btn_signal_quality.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #9b59b6, stop:1 #8e44ad);
+                color: white;
+                border: 1px solid #7d3c98;
+                padding: 8px 12px;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: bold;
+                text-align: center;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #8e44ad, stop:1 #7d3c98);
+                border: 1px solid #6c3483;
+            }
+            QPushButton:pressed {
+                background: #7d3c98;
+                padding-top: 9px;
+                padding-bottom: 7px;
+            }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+                color: #7f8c8d;
+                border: 1px solid #95a5a6;
+            }
+        """)
         layout.addWidget(self.btn_signal_quality)
         
-        # เพิ่มปุ่ม Sync
+        # ปุ่ม Sync
         self.btn_sync = QPushButton("🔄 Sync")
         self.btn_sync.setFixedWidth(100)
         self.btn_sync.clicked.connect(self.sync_manager.manual_sync)
@@ -241,15 +271,13 @@ class SimInfoWindow(QMainWindow):
         """)
         layout.addWidget(self.btn_sync)
         
-        # ==================== เพิ่ม SMS Inbox Badge Container ====================
-        # สร้าง container สำหรับ SMS Inbox Badge
+        # SMS Inbox Badge Container (เหมือนเดิม)
         sms_container = QWidget()
         sms_container.setFixedSize(160, 40)
         sms_layout = QHBoxLayout()
         sms_layout.setContentsMargins(0, 0, 0, 0)
         sms_layout.setSpacing(0)
         
-        # สร้าง SMS Inbox Badge
         self.sms_inbox_badge = QLabel("SMS Inbox")
         self.sms_inbox_badge.setAlignment(Qt.AlignCenter)
         self.sms_inbox_badge.setFixedSize(110, 35)
@@ -266,7 +294,6 @@ class SimInfoWindow(QMainWindow):
         """)
         sms_layout.addWidget(self.sms_inbox_badge)
         
-        # สร้าง Number Badge (แดงกลม)
         self.sms_count_badge = QLabel("0")
         self.sms_count_badge.setAlignment(Qt.AlignCenter)
         self.sms_count_badge.setFixedSize(28, 28)
@@ -282,11 +309,8 @@ class SimInfoWindow(QMainWindow):
             }
         """)
         
-        # วางตำแหน่ง Number Badge ให้อยู่มุมขวาบน
         sms_layout.addWidget(self.sms_count_badge)
         sms_layout.setAlignment(self.sms_count_badge, Qt.AlignTop | Qt.AlignRight)
-        
-        # ปรับตำแหน่งให้ Number Badge ลอยอยู่เหนือมุมขวาบน
         sms_layout.setContentsMargins(-15, 0, 5, 0)
         
         sms_container.setLayout(sms_layout)
@@ -676,6 +700,19 @@ class SimInfoWindow(QMainWindow):
         self.btn_smslog.clicked.connect(self.dialog_manager.show_sms_log_dialog)
         self.btn_realtime_monitor.clicked.connect(self.open_realtime_monitor)
         
+        # Signal Quality - ต้องเชื่อมต่อ
+        self.btn_signal_quality.clicked.connect(self.show_signal_quality_checker)
+        
+        # AT Command management
+        self.btn_send_at.clicked.connect(self.send_at_command_main)
+        self.btn_del_cmd.clicked.connect(self.remove_at_command_main)
+        self.btn_help.clicked.connect(self.show_at_command_helper)
+        
+        # SMS management
+        self.btn_send_sms_main.clicked.connect(self.send_sms_main)
+        self.btn_show_sms.clicked.connect(self.sms_inbox_manager.show_inbox_sms)
+        self.btn_clear_sms_main.clicked.connect(self.sms_inbox_manager.clear_all_sms)
+    
         # ⭐ เพิ่มการเชื่อมต่อปุ่ม SMS ที่ส่งไม่สำเร็จ
         if hasattr(self, 'btn_failed_sms'):
             self.btn_failed_sms.clicked.connect(self.show_failed_sms_dialog)
@@ -1032,7 +1069,7 @@ class SimInfoWindow(QMainWindow):
         
         self.show_non_blocking_message(
             "SIM Failure Detected",
-            "📵 SIM failure detected!\n\nSystem is performing automatic recovery...\n\nPlease wait for the process to complete."
+            "⚠️ SIM failure detected!\n\nSystem is performing automatic recovery...\n\nPlease wait for the process to complete."
         )
         
         # เริ่มนับเวลา recovery
@@ -1197,21 +1234,50 @@ class SimInfoWindow(QMainWindow):
         event.accept()
 
     def show_signal_quality_checker(self):
-        """เปิดหน้าต่าง Enhanced Signal Quality Checker"""
+        """เปิดหน้าต่าง Enhanced Signal Quality Checker - Improved version"""
         try:
-            # Debug สถานะ
+            # แสดงสถานะ debug
             port = self.port_combo.currentData()
             baudrate = int(self.baud_combo.currentText())
             
-            print(f"🔍 Opening Signal Quality: Port={port}, Baudrate={baudrate}")
-            print(f"🔍 Serial thread running: {self.serial_thread.isRunning() if self.serial_thread else False}")
+            print(f"\n🔍 SIGNAL QUALITY DEBUG:")
+            print(f"📌 Port: {port}")
+            print(f"📌 Baudrate: {baudrate}")
+            print(f"📌 Serial Thread: {self.serial_thread is not None}")
+            print(f"📌 Thread Running: {self.serial_thread.isRunning() if self.serial_thread else False}")
             
+            # ตรวจสอบ port
             if not port or port == "Device not found":
                 QMessageBox.warning(self, "No Port Selected", 
-                                "❌ Please select a valid COM port first")
+                                "❌ Please select a valid COM port first!\n\n"
+                                "Steps:\n"
+                                "1. Connect your modem to USB\n"
+                                "2. Click 'Refresh Ports'\n"
+                                "3. Select the correct port\n"
+                                "4. Try again")
                 return
             
-            from windows.enhanced_sim_signal_quality_window import show_enhanced_sim_signal_quality_window
+            # ตรวจสอบ serial connection
+            if not self.serial_thread or not self.serial_thread.isRunning():
+                QMessageBox.warning(self, "No Connection", 
+                                "❌ No active serial connection!\n\n"
+                                "Please click 'Refresh Ports' to establish connection.")
+                return
+            
+            # แสดงข้อความเตรียมพร้อม
+            self.update_at_result_display("[SIGNAL QUALITY] 🚀 Opening Signal Quality Checker...")
+            
+            # Import และสร้าง window
+            try:
+                from windows.enhanced_sim_signal_quality_window import show_enhanced_sim_signal_quality_window
+                print("✅ Module imported successfully")
+            except ImportError as e:
+                print(f"❌ Import failed: {e}")
+                QMessageBox.critical(self, "Import Error", 
+                                f"❌ Cannot import Signal Quality module:\n\n{e}")
+                return
+            
+            print("🏗️ Creating Signal Quality window...")
             
             quality_window = show_enhanced_sim_signal_quality_window(
                 port=port, 
@@ -1221,13 +1287,71 @@ class SimInfoWindow(QMainWindow):
             )
             
             if quality_window:
-                print("✅ Signal Quality window opened successfully")
+                print("✅ Signal Quality window created successfully!")
+                
                 # เพิ่มใน dialog manager
-                if hasattr(self, 'dialog_manager'):
+                if hasattr(self, 'dialog_manager') and hasattr(self.dialog_manager, 'open_dialogs'):
                     self.dialog_manager.open_dialogs.append(quality_window)
+                    print("✅ Added to dialog manager")
+                
+                # แสดงข้อความสำเร็จ
+                self.update_at_result_display("[SIGNAL QUALITY] ✅ Signal Quality Checker opened successfully!")
+                
+                # เปลี่ยนสีปุ่มชั่วคราวเป็นสีเขียว
+                original_style = self.btn_signal_quality.styleSheet()
+                success_style = """
+                    QPushButton {
+                        background-color: #27ae60;
+                        color: white;
+                        border: 1px solid #229954;
+                        padding: 8px 12px;
+                        border-radius: 6px;
+                        font-size: 11px;
+                        font-weight: bold;
+                    }
+                """
+                self.btn_signal_quality.setStyleSheet(success_style)
+                
+                # กลับเป็นสีเดิมหลัง 2 วินาที
+                QTimer.singleShot(2000, lambda: self.btn_signal_quality.setStyleSheet(original_style))
+                
+                return quality_window
             else:
-                QMessageBox.critical(self, "Error", "❌ Failed to create window")
+                print("❌ Failed to create Signal Quality window")
+                QMessageBox.critical(self, "Creation Failed", 
+                                "❌ Failed to create Signal Quality window!\n\n"
+                                "Please check console for error details.")
+                self.update_at_result_display("[SIGNAL QUALITY] ❌ Failed to open Signal Quality Checker")
                 
         except Exception as e:
-            print(f"❌ Error: {e}")
-            QMessageBox.critical(self, "Error", f"Cannot open Signal Quality Checker: {e}")
+            error_msg = f"Error opening Signal Quality Checker: {e}"
+            print(f"❌ EXCEPTION: {error_msg}")
+            
+            QMessageBox.critical(self, "Error", 
+                            f"❌ Cannot open Signal Quality Checker:\n\n{error_msg}\n\n"
+                            f"Debug Info:\n"
+                            f"• Check console for details\n"
+                            f"• Verify port connection\n"
+                            f"• Restart application if needed")
+            
+            self.update_at_result_display(f"[SIGNAL QUALITY] ❌ Error: {error_msg}")
+
+    def test_signal_quality_button(self):
+        """ทดสอบการทำงานของปุ่ม Signal Quality"""
+        try:
+            print("🧪 Testing Signal Quality button...")
+            
+            # ตรวจสอบว่าปุ่มถูกสร้างแล้ว
+            if hasattr(self, 'btn_signal_quality'):
+                print("✅ Button exists")
+                print(f"✅ Button enabled: {self.btn_signal_quality.isEnabled()}")
+                print(f"✅ Button visible: {self.btn_signal_quality.isVisible()}")
+                
+                # จำลองการคลิก
+                self.btn_signal_quality.click()
+                print("✅ Button click simulated")
+            else:
+                print("❌ Button does not exist")
+                
+        except Exception as e:
+            print(f"❌ Test failed: {e}")

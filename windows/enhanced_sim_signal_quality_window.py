@@ -120,7 +120,7 @@ class EnhancedSignalQualityThread(QThread):
         
     def run(self):
         try:
-            self.status_updated.emit("🏢 Connected - Loading SIM information...")
+            self.status_updated.emit("🟢 Connected - Loading SIM information...")
             
             if self.include_sim_info and not self.sim_identity:
                 self.sim_identity = self._get_sim_identity()
@@ -128,7 +128,7 @@ class EnhancedSignalQualityThread(QThread):
                     self.sim_info_updated.emit(self.sim_identity)
                     self.status_updated.emit(f"📱 SIM Info loaded - {self.sim_identity.carrier}")
             
-            self.status_updated.emit("🏢 Connected - Monitoring signal...")
+            self.status_updated.emit("🟢 Connected - Monitoring signal...")
             
             while self.monitoring:
                 try:
@@ -411,7 +411,7 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         self.apply_styles()
         
         if self.shared_serial_thread and self.shared_serial_thread.isRunning():
-            self.connection_status.setText("🏢 Using shared connection")
+            self.connection_status.setText("🔗 Using shared connection")
             self.start_btn.setEnabled(True)
         else:
             self.connection_status.setText("🔴 No shared connection")
@@ -784,18 +784,18 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         layout.addWidget(network_group)
         
         # MCC/MNC Database Info
-        database_group = QGroupBox("📚 MCC/MNC Database")
-        database_layout = QVBoxLayout()
+        # database_group = QGroupBox("📚 MCC/MNC Database")
+        # database_layout = QVBoxLayout()
         
         self.database_text = QTextEdit()
         self.database_text.setReadOnly(True)
         self.database_text.setMaximumHeight(150)
         self.database_text.setFont(QFont("Courier New", 10))
-        self.database_text.setText("MCC/MNC database information will be displayed here when SIM is detected...")
-        database_layout.addWidget(self.database_text)
+        # self.database_text.setText("MCC/MNC database information will be displayed here when SIM is detected...")
+        # database_layout.addWidget(self.database_text)
         
-        database_group.setLayout(database_layout)
-        layout.addWidget(database_group)
+        # database_group.setLayout(database_layout)
+        # layout.addWidget(database_group)
         
         layout.addStretch()
         content.setLayout(layout)
@@ -984,7 +984,7 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             self.include_sim_check.setEnabled(True)
             
             if self.shared_serial_thread and self.shared_serial_thread.isRunning():
-                self.connection_status.setText("🏢 Using shared connection")
+                self.connection_status.setText("🔗 Using shared connection")
                 self.status_label.setText("⏹️ Monitoring stopped - Connection available")
             else:
                 self.connection_status.setText("🔴 No shared connection")
@@ -1010,7 +1010,7 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             self.sim_labels['mnc_info'].setText(f"{sim_info.mnc} ({sim_info.carrier})" if sim_info.mnc else "Not available")
             self.sim_labels['msin'].setText(sim_info.msin or "Not available")
             self.sim_labels['country'].setText(sim_info.country or "Unknown")
-            self.sim_labels['home_network'].setText("❌ Yes" if sim_info.home_network else "✅ No (Roaming)")
+            self.sim_labels['home_network'].setText("✅ Yes" if sim_info.home_network else "❌ No (Roaming)")
             self.sim_labels['phone_number'].setText(sim_info.phone_number or "Not available")
             
             # ICCID Info
@@ -1032,46 +1032,46 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         except Exception as e:
             print(f"Error updating SIM info display: {e}")
     
-    def update_mcc_mnc_database_info(self, sim_info: SIMIdentityInfo):
-        try:
-            if not sim_info.mcc:
-                return
+#     def update_mcc_mnc_database_info(self, sim_info: SIMIdentityInfo):
+#         try:
+#             if not sim_info.mcc:
+#                 return
                 
-            database_text = f"""
-📚 MCC/MNC DATABASE INFORMATION
-{'='*50}
+#             database_text = f"""
+# 📚 MCC/MNC DATABASE INFORMATION
+# {'='*50}
 
-🌍 Mobile Country Code (MCC): {sim_info.mcc}
-   • Country: {sim_info.country or 'Unknown'}
-   • ISO Code: {self.get_iso_code(sim_info.mcc)}
+# 🌍 Mobile Country Code (MCC): {sim_info.mcc}
+#    • Country: {sim_info.country or 'Unknown'}
+#    • ISO Code: {self.get_iso_code(sim_info.mcc)}
 
-📡 Mobile Network Code (MNC): {sim_info.mnc}
-   • Carrier: {sim_info.carrier or 'Unknown'}
-   • Network Type: {self.get_network_type(sim_info.mcc, sim_info.mnc)}
+# 📡 Mobile Network Code (MNC): {sim_info.mnc}
+#    • Carrier: {sim_info.carrier or 'Unknown'}
+#    • Network Type: {self.get_network_type(sim_info.mcc, sim_info.mnc)}
 
-🏔️ Complete IMSI Breakdown:
-   • Full IMSI: {sim_info.imsi}
-   • MCC: {sim_info.mcc} (Country: {sim_info.country})
-   • MNC: {sim_info.mnc} (Network: {sim_info.carrier})
-   • MSIN: {sim_info.msin} (Subscriber ID)
+# 🏔️ Complete IMSI Breakdown:
+#    • Full IMSI: {sim_info.imsi}
+#    • MCC: {sim_info.mcc} (Country: {sim_info.country})
+#    • MNC: {sim_info.mnc} (Network: {sim_info.carrier})
+#    • MSIN: {sim_info.msin} (Subscriber ID)
 
-💳 ICCID Analysis:
-   • Full ICCID: {sim_info.iccid}
-   • IIN: {sim_info.iin} (Issuer Identification)
-   • Account ID: {sim_info.account_id}
-   • Check Digit: {sim_info.check_digit}
-   • Luhn Validation: {'✅ Passed' if sim_info.iccid_valid else '❌ Failed'}
+# 💳 ICCID Analysis:
+#    • Full ICCID: {sim_info.iccid}
+#    • IIN: {sim_info.iin} (Issuer Identification)
+#    • Account ID: {sim_info.account_id}
+#    • Check Digit: {sim_info.check_digit}
+#    • Luhn Validation: {'✅ Passed' if sim_info.iccid_valid else '❌ Failed'}
 
-🔍 Network Analysis:
-   • Home Network: {'Yes' if sim_info.home_network else 'No'}
-   • Roaming: {'Active' if sim_info.roaming else 'Inactive'}
-   • SIM Status: {'Valid' if sim_info.sim_valid else 'Invalid'}
-"""
+# 🔍 Network Analysis:
+#    • Home Network: {'Yes' if sim_info.home_network else 'No'}
+#    • Roaming: {'Active' if sim_info.roaming else 'Inactive'}
+#    • SIM Status: {'Valid' if sim_info.sim_valid else 'Invalid'}
+# """
             
-            self.database_text.setText(database_text)
+#             self.database_text.setText(database_text)
             
-        except Exception as e:
-            print(f"Error updating database info: {e}")
+#         except Exception as e:
+#             print(f"Error updating database info: {e}")
     
     def get_iso_code(self, mcc: str) -> str:
         mcc_db = {
@@ -1263,11 +1263,11 @@ class EnhancedSIMSignalQualityWindow(QDialog):
                 return
             
             ranges = [
-                (90, 100, "Excellent", "🏢"),   # Office building = Excellent
-                (75, 89, "Good", "📡"),         # Satellite antenna = Good
+                (90, 100, "Excellent", "🟢"),   # Office building = Excellent
+                (75, 89, "Good", "✅"),         # Satellite antenna = Good
                 (50, 74, "Fair", "📶"),         # Antenna bars = Fair
-                (25, 49, "Poor", "🔴"),         # Red circle = Poor
-                (0, 24, "Very Poor", "⚠️")      # Warning sign = Very Poor
+                (25, 49, "Poor", "🟠"),         # Red circle = Poor
+                (0, 24, "Very Poor", "🔴")      # Warning sign = Very Poor
             ]
 
             distribution_text = "📊 QUALITY DISTRIBUTION\n"
@@ -1307,36 +1307,35 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             
             latest_measurement = self.measurements_history[-1]
             
-            recommendations_text = """
-🔍 ENHANCED SIGNAL ANALYSIS & RECOMMENDATIONS
-=============================================
+            # ✅ แก้ไข: ใช้ f-string หรือ .format() ให้ถูกต้อง
+            recommendations_text = f"""
+    🔍 ENHANCED SIGNAL ANALYSIS & RECOMMENDATIONS
+    =============================================
 
-📱 Current Status:
-   • Signal Strength: {signal_dbm} dBm
-   • Quality Score: {quality:.1f}%
-   • Signal Grade: {grade}
-   • Network: {network}
-   • Carrier: {carrier}
+    📱 Current Status:
+    • Signal Strength: {latest_measurement.rssi} dBm
+    • Quality Score: {latest_measurement.quality_score:.1f}%
+    • Signal Grade: {self.get_signal_grade(latest_measurement.rssi)}
+    • Network: {latest_measurement.network_type}
+    • Carrier: {latest_measurement.carrier}
 
-""".format(
-                latest_measurement.rssi,
-                latest_measurement.quality_score,
-                self.get_signal_grade(latest_measurement.rssi),
-                latest_measurement.network_type,
-                latest_measurement.carrier
-            )
+    """
+            # ✅ ลบบรรทัดที่ไม่ได้ใช้งาน (recommendations_text.format(...))
             
             if latest_measurement.sim_info:
                 sim_info = latest_measurement.sim_info
+                # ✅ แก้ไข: เปลี่ยนอิโมจิจาก 🏔️ เป็น 📱
                 recommendations_text += f"""
-🏔️ SIM Information:
-   • IMSI: {sim_info.imsi}
-   • MCC: {sim_info.mcc} ({sim_info.country})
-   • MNC: {sim_info.mnc} ({sim_info.carrier})
-   • ICCID: {sim_info.iccid[:8]}...{sim_info.iccid[-4:] if sim_info.iccid else ''}
-   • Home Network: {'Yes' if sim_info.home_network else 'No (Roaming)'}
-   • SIM Valid: {'Yes' if sim_info.sim_valid else 'No'}
-"""
+    📱 SIM Information:
+    • IMSI: {sim_info.imsi}
+    • MCC: {sim_info.mcc} ({sim_info.country})
+    • MNC: {sim_info.mnc} ({sim_info.carrier})
+    • ICCID: {sim_info.iccid[:8]}...{sim_info.iccid[-4:] if sim_info.iccid else ''}
+    • Home Network: {'✅ Yes' if sim_info.home_network else '❌ No (Roaming)'}
+    • SIM Valid: {'✅ Yes' if sim_info.sim_valid else '❌ No'}
+
+    """
+            
             recommendations = self.generate_recommendations()
             if recommendations:
                 recommendations_text += "💡 Recommendations:\n"
@@ -1350,42 +1349,94 @@ class EnhancedSIMSignalQualityWindow(QDialog):
                     else "📉 Declining" if recent_quality[-1] < recent_quality[0]
                     else "➡️ Stable"
                 )
-                recommendations_text += f"\n📈 Recent Trend: {trend}\n"
+                recommendations_text += f"\n📊 Recent Trend: {trend}\n"
             
             if self.sim_identity:
+                # ✅ แก้ไข: เพิ่ม emoji ที่เหมาะสมและแก้ไขรูปแบบ
+                roaming_status = '🌍 International Roaming' if self.sim_identity.roaming else '🏠 Home Network'
+                iccid_validation = '✅ Passed' if self.sim_identity.iccid_valid else '❌ Failed'
+                
                 recommendations_text += f"""
 
-📚 MCC/MNC Analysis:
-   • Country Code (MCC): {self.sim_identity.mcc} = {self.sim_identity.country}
-   • Network Code (MNC): {self.sim_identity.mnc} = {self.sim_identity.carrier}
-   • Network Type: {self.get_network_type(self.sim_identity.mcc, self.sim_identity.mnc)}
-   • ISO Country: {self.get_iso_code(self.sim_identity.mcc)}
-   • Roaming Status: {'International Roaming' if self.sim_identity.roaming else 'Home Network'}
+    📚 MCC/MNC Analysis:
+    • Country Code (MCC): {self.sim_identity.mcc} = {self.sim_identity.country}
+    • Network Code (MNC): {self.sim_identity.mnc} = {self.sim_identity.carrier}
+    • Network Type: {self.get_network_type(self.sim_identity.mcc, self.sim_identity.mnc)}
+    • ISO Country: {self.get_iso_code(self.sim_identity.mcc)}
+    • Roaming Status: {roaming_status}
 
-🔍 ICCID Analysis:
-   • Full ICCID: {self.sim_identity.iccid}
-   • Issuer ID (IIN): {self.sim_identity.iin}
-   • Check Digit Validation: {'✅ Passed' if self.sim_identity.iccid_valid else '❌ Failed'}
-   • Card Length: {len(self.sim_identity.iccid) if self.sim_identity.iccid else 0} digits
-"""
+    💳 ICCID Analysis:
+    • Full ICCID: {self.sim_identity.iccid}
+    • Issuer ID (IIN): {self.sim_identity.iin}
+    • Check Digit Validation: {iccid_validation}
+    • Card Length: {len(self.sim_identity.iccid) if self.sim_identity.iccid else 0} digits
+
+    """
+            
+            # ✅ แก้ไข: ปรับปรุงส่วน Connection Info
+            connection_status = "✅ Active" if self.shared_serial_thread and self.shared_serial_thread.isRunning() else "❌ Inactive"
+            sim_info_included = "✅ Yes" if self.include_sim_check.isChecked() else "❌ No"
             
             recommendations_text += f"""
+    🔗 Connection Info:
+    • Using shared serial connection from main window
+    • Port: {self.port}
+    • Baudrate: {self.baudrate}
+    • Connection status: {connection_status}
+    • SIM Info included: {sim_info_included}
 
-🔒 Connection Info:
-   • Using shared serial connection from main window
-   • Port: {self.port}
-   • Baudrate: {self.baudrate}
-   • Connection status: {"✅ Active" if self.shared_serial_thread and self.shared_serial_thread.isRunning() else "❌ Inactive"}
-   • SIM Info included: {"✅ Yes" if self.include_sim_check.isChecked() else "❌ No"}
+    📊 Monitoring Statistics:
+    • Total measurements: {len(self.measurements_history)}
+    • Average quality: {sum(m.quality_score for m in self.measurements_history) / len(self.measurements_history):.1f}%
+    • Best signal: {max(m.rssi for m in self.measurements_history if m.rssi > -999)} dBm
+    • Worst signal: {min(m.rssi for m in self.measurements_history if m.rssi > -999)} dBm
 
-⚪ Note: This Signal Quality Checker uses the same serial connection as the main window.
-   If you see connection issues, please check the main window's serial connection.
-"""
+    ℹ️  Note: This Signal Quality Checker uses the same serial connection as the main window.
+    If you see connection issues, please check the main window's serial connection.
+    """
             
+            # ✅ แก้ไข: เพิ่มการตั้งค่าข้อความและเลื่อนตำแหน่ง
             self.recommendations_text.setText(recommendations_text)
             
+            # เลื่อนไปด้านบนเสมอ
+            cursor = self.recommendations_text.textCursor()
+            cursor.movePosition(cursor.Start)
+            self.recommendations_text.setTextCursor(cursor)
+            
         except Exception as e:
-            print(f"Error updating recommendations: {e}")
+            error_msg = f"Error updating recommendations: {e}"
+            print(error_msg)
+            
+            # ✅ แสดงข้อความ error ใน recommendations tab
+            error_text = f"""
+    ❌ ERROR IN RECOMMENDATIONS
+    ==========================
+
+    An error occurred while generating recommendations:
+    {str(e)}
+
+    🔧 Troubleshooting:
+    • Check console for detailed error messages
+    • Verify SIM data is available  
+    • Restart monitoring if needed
+    • Check serial connection status
+
+    💡 Try:
+    • Stop and start monitoring again
+    • Check main window connection
+    • Verify port settings
+    • Restart the application if needed
+
+    Debug Info:
+    • Measurements: {len(self.measurements_history) if hasattr(self, 'measurements_history') else 'Unknown'}
+    • SIM Identity: {'Available' if hasattr(self, 'sim_identity') and self.sim_identity else 'Not available'}
+    • Serial Thread: {'Running' if hasattr(self, 'shared_serial_thread') and self.shared_serial_thread and self.shared_serial_thread.isRunning() else 'Not running'}
+    """
+            
+            try:
+                self.recommendations_text.setText(error_text)
+            except:
+                print("Failed to display error message in recommendations text widget")
     
     def generate_recommendations(self) -> List[str]:
         if not self.measurements_history:
