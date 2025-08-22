@@ -20,6 +20,9 @@ class SerialMonitorThread(QThread):
         self.serial_conn = None
         self.running = False
         self.cmt_buffer = None
+
+        # ✅ เพิ่มตัวแปรติดตาม background commands
+        self.last_command_was_background = False
         
         # ตัวแปรสำหรับ CPIN polling
         self.cpin_polling_active = False
@@ -72,7 +75,7 @@ class SerialMonitorThread(QThread):
                 self.serial_conn = None
     
     def process_received_line(self, line):
-        """ประมวลผลข้อมูลที่รับมา - ทำความสะอาด"""
+        """ประมวลผลข้อมูลที่รับมา - กรอง OK/ERROR จาก background commands"""
         
         # ตรวจสอบ recovery response
         if self.recovery_active:
@@ -105,6 +108,13 @@ class SerialMonitorThread(QThread):
         if any(keyword in line.upper() for keyword in ["SIM NOT INSERTED", "SIM FAILURE", "SIM ERROR", "+SIMCARD: NOT AVAILABLE"]):
             self.sim_failure_detected.emit()
             return
+        
+        # ✅ กรอง OK/ERROR ที่มาจาก background commands
+        if line.strip().upper() in ["OK", "ERROR"]:
+            if hasattr(self, 'last_command_was_background') and self.last_command_was_background:
+                # ไม่ส่ง OK/ERROR จาก background commands ไปที่ UI
+                self.last_command_was_background = False  # รีเซ็ต
+                return
         
         # ส่งข้อมูลทั่วไปไปยัง UI
         if line.strip():
@@ -258,15 +268,35 @@ class SerialMonitorThread(QThread):
             self.at_response_signal.emit(f"[SMS ERROR] {e}")
     
     def send_command(self, command):
-        """ส่งคำสั่ง AT - แสดง [SENT] เฉพาะตอนไม่ recovery"""
+        """ส่งคำสั่ง AT - แสดง [SENT] เฉพาะตอนไม่ recovery และไม่ใช่ background monitoring"""
         if self.serial_conn and self.running:
             try:
                 cmd_bytes = f"{command}\r\n".encode()
                 self.serial_conn.write(cmd_bytes)
                 self.serial_conn.flush()
                 
-                # แสดง [SENT] เฉพาะตอนไม่ recovery
-                if not self.recovery_active:
+                # ✅ กำหนดว่าเป็น background command หรือไม่
+                background_commands = [
+                    "AT+CSQ", "AT+CESQ", "AT+COPS", "AT+CREG", 
+                    "AT+CIMI", "AT+CCID", "AT+CNUM"
+                ]
+                is_background_command = any(bg_cmd in command.upper() for bg_cmd in background_commands)
+                
+                # ✅ บันทึกว่าคำสั่งล่าสุดเป็น background command หรือไม่
+                self.last_command_was_background = is_background_command
+                
+                should_show_sent = True
+                
+                # ไม่แสดงเมื่ออยู่ในโหมด recovery
+                if self.recovery_active:
+                    should_show_sent = False
+                
+                # ไม่แสดงสำหรับ background commands
+                if is_background_command:
+                    should_show_sent = False
+                
+                # แสดง [SENT] เฉพาะคำสั่งที่ user ส่งจริงๆ
+                if should_show_sent:
                     self.at_response_signal.emit(f"[SENT] {command}")
                 
                 return True
@@ -276,7 +306,7 @@ class SerialMonitorThread(QThread):
         else:
             self.at_response_signal.emit(f"[SEND ERROR] No serial connection available")
             return False
-    
+        
     def send_raw(self, data):
         """ส่งข้อมูลดิบ"""
         if self.serial_conn and self.running:

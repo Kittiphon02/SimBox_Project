@@ -1,6 +1,6 @@
 # managers/at_command_manager.py
 """
-จัดการคำสั่ง AT และประวัติคำสั่ง
+จัดการคำสั่ง AT และประวัติคำสั่ง - FIXED VERSION
 """
 
 import os
@@ -54,8 +54,8 @@ class ATCommandManager:
         combo_widget.addItem(command)
         self.save_command_history(combo_widget)
     
-    def remove_command_from_history(self, combo_widget, input_widget):
-        """ลบคำสั่ง AT ที่เลือกใน ComboBox"""
+    def remove_command_from_history(self, combo_widget, input_widget=None):
+        """ลบคำสั่ง AT ที่เลือกใน ComboBox - FIXED VERSION"""
         current_idx = combo_widget.currentIndex()
         current_text = combo_widget.currentText().strip()
         
@@ -70,11 +70,38 @@ class ATCommandManager:
                 combo_widget.removeItem(current_idx)
                 self.save_command_history(combo_widget)
                 
+                # ⭐ FIXED: ตรวจสอบประเภทของ input_widget ก่อนเรียกใช้
                 if combo_widget.count() > 0:
                     new_text = combo_widget.currentText()
-                    input_widget.setPlainText(new_text)
+                    
+                    # ตรวจสอบว่า input_widget คืออะไร
+                    if input_widget is not None:
+                        if hasattr(input_widget, 'setPlainText'):
+                            # สำหรับ QTextEdit
+                            input_widget.setPlainText(new_text)
+                        elif hasattr(input_widget, 'setText'):
+                            # สำหรับ QLineEdit
+                            input_widget.setText(new_text)
+                        elif hasattr(input_widget, 'setEditText'):
+                            # สำหรับ QComboBox editable
+                            input_widget.setEditText(new_text)
+                        elif hasattr(input_widget, 'setCurrentText'):
+                            # สำหรับ QComboBox ทั่วไป
+                            input_widget.setCurrentText(new_text)
+                        else:
+                            # ถ้าไม่รู้จักประเภท ให้แสดงเตือน
+                            print(f"Warning: Unknown widget type for input_widget: {type(input_widget)}")
                 else:
-                    input_widget.clear()
+                    # ถ้าไม่มีรายการเหลือ ให้ล้างข้อความ
+                    if input_widget is not None:
+                        if hasattr(input_widget, 'clear'):
+                            input_widget.clear()
+                        elif hasattr(input_widget, 'setText'):
+                            input_widget.setText("")
+                        elif hasattr(input_widget, 'setEditText'):
+                            input_widget.setEditText("")
+                        elif hasattr(input_widget, 'setCurrentText'):
+                            input_widget.setCurrentText("")
                 
                 QMessageBox.information(
                     self.parent, "Deletion successful", 

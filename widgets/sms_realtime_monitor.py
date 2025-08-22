@@ -405,6 +405,7 @@ class SmsRealtimeMonitor(QDialog):
             
         except Exception as e:
             print(f"❌ DEBUG Message: Error = {e}")
+
             return message_hex
     
     def _fix_concatenated_words(self, text):
@@ -673,6 +674,13 @@ class SmsRealtimeMonitor(QDialog):
                 
         except Exception as e:
             self.append_to_display(f"[TEST ERROR] {e}")
+
+    def append_external_info(self, line: str):
+        try:
+            self.monitor_text.append(line)  
+            self.monitor_text.moveCursor(self.monitor_text.textCursor().End)
+        except Exception as e:
+            print(f"[EXT-INFO] append error: {e}")
 
     # ==================== 8. WINDOW EVENT HANDLERS ====================
     def closeEvent(self, event):

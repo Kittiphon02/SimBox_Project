@@ -17,9 +17,11 @@ from managers import (
 from services import load_sim_data, SerialMonitorThread
 from widgets import SimTableWidget
 from styles import MainWindowStyles
-from windows.at_command_helper import ATCommandHelperDialog
+from windows.at_command_helper import ATCommandHelper
 from services.sms_log import log_sms_sent
 from widgets.sms_log_dialog import SmsLogDialog
+# from windows.sim_signal_quality_window import show_sim_signal_quality_window
+from windows.enhanced_sim_signal_quality_window import show_enhanced_sim_signal_quality_window
 
 class SimInfoWindow(QMainWindow):
     """หน้าต่างหลักของโปรแกรม SIM Management System"""
@@ -46,6 +48,8 @@ class SimInfoWindow(QMainWindow):
     def init_variables(self):
         """เริ่มต้นตัวแปรสำคัญ"""
         self.serial_thread = None
+        self.netqual_mgr = None
+
         self.sims = []
         
         # SMS processing variables
@@ -204,6 +208,12 @@ class SimInfoWindow(QMainWindow):
             }
         """)
         layout.addWidget(self.btn_sim_recovery)
+
+        # เพิ่มปุ่ม Signal Quality Checker
+        self.btn_signal_quality = QPushButton("📶 Signal Quality")
+        self.btn_signal_quality.setFixedWidth(140)
+        self.btn_signal_quality.clicked.connect(self.show_signal_quality_checker)
+        layout.addWidget(self.btn_signal_quality)
         
         # เพิ่มปุ่ม Sync
         self.btn_sync = QPushButton("🔄 Sync")
@@ -440,8 +450,8 @@ class SimInfoWindow(QMainWindow):
         
         # อัพเดทปุ่มให้แสดงสถานะ
         if hasattr(self, 'btn_send_sms_main'):
-            self.btn_send_sms_main.setText("⚠️ No SIM")
-            self.btn_send_sms_main.setEnabled(True)  # ยังให้ส่งได้ เพื่อแสดง error message
+            self.btn_send_sms_main.setText("📵 No SIM")
+            self.btn_send_sms_main.setEnabled(True) 
 
     # เพิ่มเมธอดตรวจสอบสถานะ SIM แบบ manual
     def check_sim_status_manual(self):
@@ -561,12 +571,12 @@ class SimInfoWindow(QMainWindow):
         # ==================== FIXED HEADER LAYOUT ====================
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)  # เพิ่ม spacing
+        header_layout.setSpacing(8) 
 
         # Label "Response:"
         lbl = QLabel("Response:")
         lbl.setStyleSheet("font-weight: bold;")
-        lbl.setMinimumWidth(70)  # กำหนดความกว้างขั้นต่ำ
+        lbl.setMinimumWidth(70) 
         header_layout.addWidget(lbl)
 
         # Spacer เพื่อดันปุ่ม Hide ไปขวา
@@ -605,7 +615,7 @@ class SimInfoWindow(QMainWindow):
     def show_at_command_helper(self):
         """แสดงหน้าต่าง AT Command Helper"""
         try:
-            helper_dialog = ATCommandHelperDialog(self)
+            helper_dialog = ATCommandHelper(self)
             helper_dialog.exec_()
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Cannot open AT Command Helper: {e}")
@@ -724,7 +734,7 @@ class SimInfoWindow(QMainWindow):
         """Event filter สำหรับ Enter key fallback"""
         if obj == self.at_combo_main:
             if event.type() == event.KeyPress:
-                if event.key() == 16777220:  # Enter key
+                if event.key() == 16777220:
                     self.send_at_command_main()
                     return True
         return super().eventFilter(obj, event)
@@ -774,7 +784,7 @@ class SimInfoWindow(QMainWindow):
             self.connection_manager = SerialConnectionManager(self)
             self.connection_manager.start_sms_monitor(port, baudrate)
         else:
-            self.update_at_result_display("[INIT] ❌ No valid serial port to start monitoring")
+            self.update_at_result_display("[INIT] 📞 No valid serial port to start monitoring")
 
     # ==================== 4. PORT & CONNECTION MANAGEMENT ====================
     def refresh_ports(self):
@@ -866,7 +876,7 @@ class SimInfoWindow(QMainWindow):
         cmd = self.at_combo_main.currentText().strip()
         if not cmd:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Empty Command", "⚠️ Please enter an AT command")
+            QMessageBox.warning(self, "Empty Command", "📵 Please enter an AT command")
             return
         
         # ตรวจจับคำสั่งพิเศษ
@@ -902,8 +912,7 @@ class SimInfoWindow(QMainWindow):
 
 
     def remove_at_command_main(self):
-        """ลบคำสั่ง AT ที่เลือกใน ComboBox"""
-        self.at_command_manager.remove_command_from_history(self.at_combo_main, self.at_combo_main)
+        self.at_command_manager.remove_command_from_history(self.at_combo_main)
 
     # ==================== 6. SMS HANDLING ====================
     def send_sms_main(self):
@@ -914,13 +923,13 @@ class SimInfoWindow(QMainWindow):
         # ตรวจสอบข้อมูลที่ป้อน
         if not phone_number:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Missing Phone Number", "⚠️ Please enter a phone number")
+            QMessageBox.warning(self, "Missing Phone Number", "📵 Please enter a phone number")
             self.input_phone_main.setFocus()
             return
             
         if not message:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Missing Message", "⚠️ Please enter a message to send")
+            QMessageBox.warning(self, "Missing Message", "📵 Please enter a message to send")
             self.input_sms_main.setFocus()
             return
         
@@ -963,8 +972,8 @@ class SimInfoWindow(QMainWindow):
         try:
             # ใช้ค่า index 2 สำหรับ SMS Fail
             dlg = SmsLogDialog(parent=self)
-            dlg.combo.setCurrentIndex(2)  # เลือก "SMS Fail"
-            dlg.load_log()  # โหลดข้อมูล
+            dlg.combo.setCurrentIndex(2)
+            dlg.load_log() 
             
             dlg.setModal(False)
             dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | 
@@ -1023,7 +1032,7 @@ class SimInfoWindow(QMainWindow):
         
         self.show_non_blocking_message(
             "SIM Failure Detected",
-            "⚠️ SIM failure detected!\n\nSystem is performing automatic recovery...\n\nPlease wait for the process to complete."
+            "📵 SIM failure detected!\n\nSystem is performing automatic recovery...\n\nPlease wait for the process to complete."
         )
         
         # เริ่มนับเวลา recovery
@@ -1062,7 +1071,7 @@ class SimInfoWindow(QMainWindow):
                 self.sim_recovery_in_progress = False
                 self.show_non_blocking_message(
                     "SIM Recovery Failed",
-                    f"❌ SIM recovery failed!\n\nSIM status: {status}\n\nPlease enter PIN/PUK manually."
+                    f"📵 SIM recovery failed!\n\nSIM status: {status}\n\nPlease enter PIN/PUK manually."
                 )
 
     def finalize_manual_recovery(self):
@@ -1084,7 +1093,7 @@ class SimInfoWindow(QMainWindow):
                 f"✅ SIM recovery completed successfully!\n\nSIM Information:\n• Phone: {self.sims[0].phone}\n• Carrier: {self.sims[0].carrier}\n• Signal: {self.sims[0].signal}"
             )
         else:
-            self.update_at_result_display(f"[MANUAL] ⚠️ Recovery completed but SIM data not fully available")
+            self.update_at_result_display(f"[MANUAL] 📵 Recovery completed but SIM data not fully available")
 
     # ==================== 8. DIALOG MANAGEMENT ====================
     def open_realtime_monitor(self):
@@ -1186,3 +1195,39 @@ class SimInfoWindow(QMainWindow):
             print(f"Error during close: {e}")
         
         event.accept()
+
+    def show_signal_quality_checker(self):
+        """เปิดหน้าต่าง Enhanced Signal Quality Checker"""
+        try:
+            # Debug สถานะ
+            port = self.port_combo.currentData()
+            baudrate = int(self.baud_combo.currentText())
+            
+            print(f"🔍 Opening Signal Quality: Port={port}, Baudrate={baudrate}")
+            print(f"🔍 Serial thread running: {self.serial_thread.isRunning() if self.serial_thread else False}")
+            
+            if not port or port == "Device not found":
+                QMessageBox.warning(self, "No Port Selected", 
+                                "❌ Please select a valid COM port first")
+                return
+            
+            from windows.enhanced_sim_signal_quality_window import show_enhanced_sim_signal_quality_window
+            
+            quality_window = show_enhanced_sim_signal_quality_window(
+                port=port, 
+                baudrate=baudrate, 
+                parent=self, 
+                serial_thread=self.serial_thread
+            )
+            
+            if quality_window:
+                print("✅ Signal Quality window opened successfully")
+                # เพิ่มใน dialog manager
+                if hasattr(self, 'dialog_manager'):
+                    self.dialog_manager.open_dialogs.append(quality_window)
+            else:
+                QMessageBox.critical(self, "Error", "❌ Failed to create window")
+                
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            QMessageBox.critical(self, "Error", f"Cannot open Signal Quality Checker: {e}")
