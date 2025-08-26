@@ -4,10 +4,10 @@
   "last_baudrate": "115200",
   "log_dir": "\\\\KITTIPHON\\Simbox-log\\",
   "window_geometry": {
-    "x": 173,
-    "y": 201,
+    "x": 545,
+    "y": 152,
     "width": 1511,
-    "height": 806
+    "height": 846
   },
   "auto_sync": true,
   "sync_interval": 300000,

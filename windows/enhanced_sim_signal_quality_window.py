@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QRect
 from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QPixmap, QPainter
+from widgets.signal_strength_widget import SignalStrengthWidget
 
 ENABLE_GRAPH_SCROLLING = True
 
@@ -622,6 +623,8 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         self.signal_graph = ScrollableSignalGraph() if ENABLE_GRAPH_SCROLLING else SignalVisualizationWidget()
         graph_layout.addWidget(self.signal_graph)
 
+        self.signal_graph.pointSelected.connect(self.on_graph_point_selected)
+
         if ENABLE_GRAPH_SCROLLING:
             self.graph_auto_check = QCheckBox("Follow live")
             self.graph_auto_check.setChecked(True)
@@ -642,24 +645,43 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             )
             graph_layout.addWidget(self.graph_slider)
 
-        
         graph_group.setLayout(graph_layout)
         layout.addWidget(graph_group)
         
-        # Signal Strength Indicator
+        # Signal Strength Indicator - แก้ไขส่วนนี้
         indicator_group = QGroupBox("📶 Signal Strength")
         indicator_layout = QVBoxLayout()
         
-        self.signal_bars_label = QLabel("📶 ░░░░░ (0/5)")
-        self.signal_bars_label.setFont(QFont("Courier New", 14, QFont.Bold))
-        self.signal_bars_label.setAlignment(Qt.AlignCenter)
-        indicator_layout.addWidget(self.signal_bars_label)
+        # ✅ สร้าง HBoxLayout สำหรับแถวแรก
+        row = QHBoxLayout()  # ← เพิ่มบรรทัดนี้
         
+        # ไอคอนทางซ้าย
+        # icon_lbl = QLabel("📶")
+        # icon_lbl.setFixedWidth(24)
+        # icon_lbl.setAlignment(Qt.AlignCenter)
+        
+        # วิดเจ็ตแท่งสัญญาณแบบอนิเมชั่น
+        self.signal_widget = SignalStrengthWidget()
+        self.signal_widget.setToolTip("Live Signal (animated)")
+
+        # ตัวเลข (x/5)
+        self.signal_count_lbl = QLabel("(0/5)")
+        self.signal_count_lbl.setAlignment(Qt.AlignVCenter)
+        self.signal_count_lbl.setMinimumWidth(48)
+
+        # row.addWidget(icon_lbl)
+        row.addWidget(self.signal_widget, 1)
+        row.addWidget(self.signal_count_lbl)
+
+        indicator_layout.addLayout(row)
+
+        # สไลเดอร์คุณภาพ (คงไว้เหมือนเดิม)
         self.signal_slider = QSlider(Qt.Horizontal)
         self.signal_slider.setRange(0, 100)
         self.signal_slider.setEnabled(False)
         indicator_layout.addWidget(self.signal_slider)
-        
+
+        # ป้ายคุณภาพ (คงไว้เหมือนเดิม)
         self.quality_label = QLabel("Quality: 0%")
         self.quality_label.setAlignment(Qt.AlignCenter)
         indicator_layout.addWidget(self.quality_label)
@@ -670,30 +692,71 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         panel.setLayout(layout)
         return panel
     
+    def on_graph_point_selected(self, global_index: int, m: SignalMeasurement):
+        """เมื่อผู้ใช้คลิกจุดบนกราฟ: เลือกแถวในตารางและอัปเดตกล่อง Current Signal Status"""
+        try:
+            # อัปเดต Current Signal Status
+            self.current_labels['rssi'].setText(f"{m.rssi} dBm")
+            self.current_labels['quality'].setText(f"{m.quality_score:.1f}%")
+            self.current_labels['bars'].setText(f"{m.signal_bars}/5")
+            self.current_labels['carrier'].setText(m.carrier)
+            self.current_labels['network'].setText(m.network_type)
+            ber_text, ber_tip, ber_unknown = self._format_ber_text(m.ber)
+            self.current_labels['ber'].setText(ber_text)
+            if ber_tip:
+                self.current_labels['ber'].setToolTip(ber_tip)
+
+            self.signal_widget.set_level(m.signal_bars)
+            self.signal_count_lbl.setText(f"({m.signal_bars}/5)")
+            self.signal_slider.setValue(int(m.quality_score))
+            self.quality_label.setText(f"Quality: {m.quality_score:.1f}%")
+
+            # คำนวณแถวในตารางจากดัชนีใน history
+            total_rows = self.measurements_table.rowCount()
+            total_hist = len(self.measurements_history)
+            # ตารางจะลบหัวเมื่อเกิน 1000 แถว (ดู add_measurement_to_table) → หา offset ให้ตรง
+            # (เมื่อ removeRow(0) คอลัมน์ # จะเลื่อนลงหนึ่ง)
+            offset = max(0, total_hist - total_rows)
+            row = max(0, min(global_index - offset, total_rows - 1))
+
+            if total_rows > 0:
+                self.measurements_table.selectRow(row)
+                item = self.measurements_table.item(row, 0) or self.measurements_table.item(row, 1)
+                if item:
+                    self.measurements_table.scrollToItem(item)
+            # แถบสถานะด้านบน
+            self.status_label.setText(
+                f"📍 #{global_index+1} at {m.timestamp} | RSSI {m.rssi} dBm | Q {m.quality_score:.1f}%"
+            )
+        except Exception as e:
+            print(f"Error selecting point from graph: {e}")
+
+    
     def create_analysis_panel(self):
+        # แผงหลักด้านขวา
         panel = QWidget()
-        layout = QVBoxLayout()
-        
-        # Tabs for different views
-        tab_widget = QTabWidget()
-        
-        sim_tab = self.create_sim_info_tab()
-        tab_widget.addTab(sim_tab, "📱 SIM Info")
-        
-        # Tab 2: Measurements Table
-        measurements_tab = self.create_measurements_tab()
-        tab_widget.addTab(measurements_tab, "📋 Measurements")
-        
-        # Tab 3: Statistics
-        stats_tab = self.create_statistics_tab()
-        tab_widget.addTab(stats_tab, "📊 Statistics")
-        
-        # Tab 4: Recommendations
-        rec_tab = self.create_recommendations_tab()
-        tab_widget.addTab(rec_tab, "💡 Recommendations")
-        
-        layout.addWidget(tab_widget)
-        panel.setLayout(layout)
+
+        # ผูกเลย์เอาต์เข้ากับ panel ตั้งแต่ตอนสร้าง (กันพลาด)
+        vbox = QVBoxLayout(panel)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(8)
+
+        # แท็บหลัก
+        tabs = QTabWidget(panel)
+
+        # 👉 สำคัญ: เมธอดเหล่านี้ต้อง return QWidget เสมอ
+        # ถ้าปัจจุบัน return เป็น QLayout หรือ int ให้แก้ให้ return QWidget ที่ setLayout เรียบร้อย
+        sim_tab = self.create_sim_info_tab()              # ต้องเป็น QWidget
+        meas_tab = self.create_measurements_tab()         # ต้องเป็น QWidget
+        stats_tab = self.create_statistics_tab()          # ต้องเป็น QWidget
+        rec_tab = self.create_recommendations_tab()       # ต้องเป็น QWidget
+
+        tabs.addTab(sim_tab, "📱 SIM Info")
+        tabs.addTab(meas_tab, "📋 Measurements")
+        tabs.addTab(stats_tab, "📊 Statistics")
+        tabs.addTab(rec_tab, "💡 Recommendations")
+
+        vbox.addWidget(tabs)
         return panel
     
     def create_sim_info_tab(self):
@@ -1118,7 +1181,9 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             self.current_labels['quality'].setStyleSheet(f"color: {quality_color}; font-weight: bold;")
             
             bars_visual = self.create_signal_bars_visual(measurement.signal_bars)
-            self.signal_bars_label.setText(bars_visual)
+            self.signal_widget.set_level(measurement.signal_bars)   # อัปเดตแท่ง
+            self.signal_count_lbl.setText(f"({measurement.signal_bars}/5)")
+
             
             self.signal_slider.setValue(int(measurement.quality_score))
             self.quality_label.setText(f"Quality: {measurement.quality_score:.1f}%")
@@ -1541,7 +1606,9 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             for label in self.stats_labels.values():
                 label.setText("--")
             
-            self.signal_bars_label.setText("📶 ░░░░░ (0/5)")
+            self.signal_widget.set_level(0)
+            self.signal_count_lbl.setText("(0/5)")
+
             self.signal_slider.setValue(0)
             self.quality_label.setText("Quality: 0%")
             self.distribution_text.clear()
@@ -1943,6 +2010,7 @@ def show_enhanced_sim_signal_quality_window(port: str = "", baudrate: int = 1152
         return None
 
 class ScrollableSignalGraph(SignalVisualizationWidget):
+    pointSelected = pyqtSignal(int, SignalMeasurement)  # ส่ง (global_index, measurement)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1952,6 +2020,7 @@ class ScrollableSignalGraph(SignalVisualizationWidget):
         self._follow_live = True    
         self._dragging = False
         self._last_x = 0
+        self._click_moved = False  # ใหม่: แยก “ลาก” กับ “คลิก”
 
     def add_measurement(self, measurement):
         self._history.append(measurement) 
@@ -1987,6 +2056,7 @@ class ScrollableSignalGraph(SignalVisualizationWidget):
         if e.button() == Qt.LeftButton:
             self._dragging = True
             self._last_x = e.x()
+            self._click_moved = False
             self.set_follow_live(False)
 
     def mouseMoveEvent(self, e):
@@ -1996,8 +2066,27 @@ class ScrollableSignalGraph(SignalVisualizationWidget):
             step = int(dx / 8)   
             if step:
                 self.set_view_start(self._view_start - step)
+                self._click_moved = True  # มีการลาก
 
     def mouseReleaseEvent(self, e):
+        # ถ้าไม่ได้ลาก ให้ถือว่าเป็นการ "คลิกเลือกจุด"
+        if e.button() == Qt.LeftButton and not self._click_moved and self.measurements:
+            margin = 40
+            rect = self.rect()
+            graph_rect = QRect(margin, margin, rect.width() - 2*margin, rect.height() - 2*margin)
+
+            x = max(graph_rect.left(), min(e.x(), graph_rect.right()))
+            if len(self.measurements) == 1:
+                local_idx = 0
+            else:
+                ratio = (x - graph_rect.left()) / max(1, graph_rect.width())
+                local_idx = int(round(ratio * (len(self.measurements) - 1)))
+            local_idx = max(0, min(local_idx, len(self.measurements) - 1))
+
+            global_idx = self._view_start + local_idx
+            m = self.measurements[local_idx]
+            self.pointSelected.emit(global_idx, m)
+
         self._dragging = False
 
     def wheelEvent(self, e):

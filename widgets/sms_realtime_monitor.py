@@ -161,6 +161,12 @@ class SmsRealtimeMonitor(QDialog):
         # จัดเก็บ reference สำหรับ styling
         self.control_group = control_group
     
+    # @QtCore.pyqtSlot(str)
+    def append_from_main(self, text: str):
+        """รับข้อความ real-time/URC ที่ส่งมาจากหน้าหลัก"""
+        # รองรับทั้งสตริงเดียวหรือหลายบรรทัดที่รวมมาแล้ว
+        self.append_to_display(text)
+    
     def create_monitor_section(self, layout):
         """สร้างส่วนแสดงผล monitor"""
         monitor_group = QGroupBox("Real-time SMS Monitor")
@@ -677,8 +683,7 @@ class SmsRealtimeMonitor(QDialog):
 
     def append_external_info(self, line: str):
         try:
-            self.monitor_text.append(line)  
-            self.monitor_text.moveCursor(self.monitor_text.textCursor().End)
+            self.append_to_display(line)
         except Exception as e:
             print(f"[EXT-INFO] append error: {e}")
 
