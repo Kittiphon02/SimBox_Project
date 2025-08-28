@@ -1,5 +1,4 @@
-# enhanced_sim_signal_quality_window.py
-
+# enhanced_sim_signal_quality_window.py - FIXED VERSION
 
 import re
 import json
@@ -66,6 +65,7 @@ class EnhancedSignalQualityThread(QThread):
     status_updated = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     sim_info_updated = pyqtSignal(SIMIdentityInfo)
+    command_response_signal = pyqtSignal(str)
     
     def __init__(self, serial_thread, interval: int = 5, include_sim_info: bool = True):
         super().__init__()
@@ -73,7 +73,12 @@ class EnhancedSignalQualityThread(QThread):
         self.interval = interval
         self.monitoring = False
         self.include_sim_info = include_sim_info
-        self.sim_identity = None  # Cache SIM info
+        self.sim_identity = None
+        
+        # เก็บ responses ชั่วคราว
+        self.temp_responses = {}
+        self.current_command = None
+        self.response_timeout = 5.0
         
         self.mcc_database = {
             "520": {"country": "Thailand", "iso": "TH"},
@@ -100,26 +105,215 @@ class EnhancedSignalQualityThread(QThread):
             "99": {"carrier": "TrueMove", "type": "GSM/3G"}
         }
         
+        # เชื่อมต่อ serial thread เพื่อรับ responses
         if self.serial_thread:
-            self.serial_thread.at_response_signal.connect(self.handle_at_response)
-        
-        self.pending_command = None
-        self.command_responses = {}
-        
-    def start_monitoring(self):
-        if not self.serial_thread or not self.serial_thread.isRunning():
-            self.error_occurred.emit("No active serial connection available")
-            return
+            self.serial_thread.at_response_signal.connect(self.handle_serial_response)
+    
+    def handle_serial_response(self, response):
+        """รับ response จาก serial thread"""
+        try:
+            if not self.monitoring or not self.current_command:
+                return
             
-        self.monitoring = True
-        self.start()
+            response = response.strip()
+            if not response:
+                return
+            
+            # แสดงใน Signal Quality window
+            self.command_response_signal.emit(f"RECV: {response}")
+            
+            # เก็บ response
+            if self.current_command not in self.temp_responses:
+                self.temp_responses[self.current_command] = []
+            
+            self.temp_responses[self.current_command].append(response)
+            
+            # ถ้าได้ OK หรือ ERROR แล้วให้หยุดรอ
+            if response in ['OK', 'ERROR'] or 'ERROR:' in response:
+                self.current_command = None
+            
+        except Exception as e:
+            print(f"Error handling response: {e}")
+    
+    def _send_command_and_wait_direct(self, command: str, timeout: float = 5.0) -> List[str]:
+        """ส่งคำสั่งและรอ response โดยตรง"""
+        if not self.serial_thread or not self.serial_thread.isRunning():
+            return ["ERROR: No connection"]
         
-    def stop_monitoring(self):
-        self.monitoring = False
-        self.quit()
-        self.wait()
+        try:
+            # บอก serial thread ว่าเป็น Signal Quality command
+            if hasattr(self.serial_thread, 'set_command_source'):
+                self.serial_thread.set_command_source('SIGNAL_QUALITY')
+            
+            # ล้างข้อมูลเก่า
+            self.temp_responses.clear()
+            self.current_command = command
+            
+            # แสดงคำสั่งที่ส่ง
+            self.command_response_signal.emit(f"[SIGNAL] {command}")
+            
+            # ส่งคำสั่ง
+            success = self.serial_thread.send_command(command)
+            if not success:
+                self.current_command = None
+                return ["ERROR: Failed to send command"]
+            
+            # รอ response
+            wait_time = 0
+            while self.current_command and wait_time < timeout:
+                self.msleep(100)
+                wait_time += 0.1
+            
+            # ดึง responses
+            responses = self.temp_responses.get(command, [])
+            self.current_command = None
+            
+            return responses if responses else ["ERROR: No response"]
+            
+        except Exception as e:
+            self.current_command = None
+            return [f"ERROR: {e}"]
+    
+    def _measure_signal(self) -> Optional[SignalMeasurement]:
+        """วัดสัญญาณ - ปรับปรุงให้แม่นยำขึ้น"""
+        try:
+            measurement = SignalMeasurement(
+                timestamp=datetime.now().strftime("%H:%M:%S")
+            )
+            
+            # ส่ง AT+CSQ
+            csq_responses = self._send_command_and_wait_direct("AT+CSQ")
+            print(f"CSQ Responses: {csq_responses}")
+            
+            for response in csq_responses:
+                # หา +CSQ: response
+                if '+CSQ:' in response:
+                    match = re.search(r'\+CSQ:\s*(\d+),\s*(\d+)', response)
+                    if match:
+                        rssi_raw = int(match.group(1))
+                        ber_raw = int(match.group(2))
+                        
+                        print(f"Found +CSQ: RSSI={rssi_raw}, BER={ber_raw}")
+                        
+                        # คำนวณ RSSI ตาม GSM 07.07 standard
+                        if rssi_raw == 99:  # Not known or not detectable
+                            measurement.rssi = -999
+                        elif rssi_raw == 0:
+                            measurement.rssi = -113  # <= -113 dBm
+                        elif rssi_raw == 31:
+                            measurement.rssi = -51   # >= -51 dBm
+                        elif 1 <= rssi_raw <= 30:
+                            measurement.rssi = -113 + (rssi_raw * 2)
+                        else:
+                            measurement.rssi = -999
+                        
+                        # คำนวณ BER
+                        if ber_raw == 99:
+                            measurement.ber = 99.0  # Not known or not detectable
+                        else:
+                            measurement.ber = ber_raw
+                        
+                        measurement.signal_bars = self._calculate_bars(measurement.rssi)
+                        measurement.quality_score = self._calculate_quality(measurement.rssi, measurement.ber)
+                        
+                        print(f"Calculated: RSSI={measurement.rssi}, Quality={measurement.quality_score:.1f}")
+                        break
+            
+            # ถ้าไม่ได้ค่าจาก +CSQ: ให้ลองหาจาก response อื่น
+            if measurement.rssi == -999:
+                for response in csq_responses:
+                    # บางครั้งได้แค่ตัวเลข เช่น "14,99"
+                    if re.match(r'^\d+,\d+$', response.strip()):
+                        parts = response.strip().split(',')
+                        if len(parts) == 2:
+                            rssi_raw = int(parts[0])
+                            ber_raw = int(parts[1])
+                            
+                            if rssi_raw != 99:
+                                if rssi_raw == 0:
+                                    measurement.rssi = -113
+                                elif rssi_raw == 31:
+                                    measurement.rssi = -51
+                                elif 1 <= rssi_raw <= 30:
+                                    measurement.rssi = -113 + (rssi_raw * 2)
+                                
+                                measurement.ber = ber_raw if ber_raw != 99 else 99.0
+                                measurement.signal_bars = self._calculate_bars(measurement.rssi)
+                                measurement.quality_score = self._calculate_quality(measurement.rssi, measurement.ber)
+                                
+                                print(f"Alternative parse: RSSI={measurement.rssi}, Quality={measurement.quality_score:.1f}")
+                                break
+            
+            # ส่ง AT+CESQ สำหรับ LTE measurements (ถ้าต้องการ)
+            cesq_responses = self._send_command_and_wait_direct("AT+CESQ")
+            for response in cesq_responses:
+                if '+CESQ:' in response:
+                    match = re.search(r'\+CESQ:\s*(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)', response)
+                    if match:
+                        values = [int(x) for x in match.groups()]
+                        rxlev, ber, rscp, ecn0, rsrq, rsrp = values
+                        
+                        if rsrq != 255:
+                            measurement.rsrq = int(-19.5 + (rsrq * 0.5))
+                        if rsrp != 255:
+                            measurement.rsrp = -141 + rsrp
+                        break
+            
+            # ดึงข้อมูล carrier
+            if not measurement.carrier or measurement.carrier == "Unknown":
+                cops_responses = self._send_command_and_wait_direct("AT+COPS?")
+                for response in cops_responses:
+                    if '+COPS:' in response:
+                        match = re.search(r'"([^"]*)"', response)
+                        if match:
+                            measurement.carrier = match.group(1)
+                            break
+            
+            # ใช้ SIM identity carrier ถ้ามี
+            if self.sim_identity and self.sim_identity.carrier:
+                measurement.carrier = self.sim_identity.carrier
+            
+            return measurement
+            
+        except Exception as e:
+            print(f"Error measuring signal: {e}")
+            self.error_occurred.emit(f"Error measuring signal: {e}")
+            return None
+    
+    def _calculate_bars(self, rssi: int) -> int:
+        """คำนวณจำนวนแท่งสัญญาณ"""
+        if rssi >= -70:
+            return 5
+        elif rssi >= -80:
+            return 4
+        elif rssi >= -90:
+            return 3
+        elif rssi >= -100:
+            return 2
+        elif rssi >= -110:
+            return 1
+        else:
+            return 0
+    
+    def _calculate_quality(self, rssi: int, ber: float) -> float:
+        """คำนวณคุณภาพสัญญาณ"""
+        if rssi == -999:
+            return 0.0
         
+        # คำนวณคะแนนจาก RSSI (0-100)
+        rssi_score = max(0, min(100, (rssi + 113) * 100 / 62))
+        
+        # คำนวณคะแนนจาก BER (0-100)
+        if ber < 99:
+            ber_score = max(0, min(100, 100 - (ber * 10)))
+        else:
+            ber_score = 50  # ค่าเริ่มต้นถ้าไม่รู้
+        
+        # รวมคะแนน (70% RSSI, 30% BER)
+        return (rssi_score * 0.7) + (ber_score * 0.3)
+    
     def run(self):
+        """Main monitoring loop"""
         try:
             self.status_updated.emit("🟢 Connected - Loading SIM information...")
             
@@ -137,7 +331,20 @@ class EnhancedSignalQualityThread(QThread):
                     if measurement:
                         measurement.sim_info = self.sim_identity
                         self.signal_measured.emit(measurement)
+                    else:
+                        # ถ้าวัดไม่ได้ ส่งค่าเริ่มต้น
+                        default_measurement = SignalMeasurement(
+                            timestamp=datetime.now().strftime("%H:%M:%S"),
+                            rssi=-999,
+                            quality_score=0.0,
+                            signal_bars=0,
+                            carrier="Unknown",
+                            network_type="Unknown"
+                        )
+                        default_measurement.sim_info = self.sim_identity
+                        self.signal_measured.emit(default_measurement)
                     
+                    # รอ interval
                     for _ in range(self.interval * 10):
                         if not self.monitoring:
                             break
@@ -152,70 +359,47 @@ class EnhancedSignalQualityThread(QThread):
         finally:
             self.status_updated.emit("🔴 Monitoring stopped")
     
-    def handle_at_response(self, response):
-        if not self.pending_command:
-            return
-            
-        if self.pending_command not in self.command_responses:
-            self.command_responses[self.pending_command] = []
-        
-        self.command_responses[self.pending_command].append(response)
-        
-        if "OK" in response or "ERROR" in response:
-            self.pending_command = None
-    
-    def _send_command_and_wait(self, command: str, timeout: float = 3.0) -> List[str]:
-        if not self.serial_thread or not self.serial_thread.isRunning():
-            return ["ERROR: No connection"]
-        
-        try:
-            self.command_responses.clear()
-            self.pending_command = command
-            
-            success = self.serial_thread.send_command(command)
-            if not success:
-                return ["ERROR: Failed to send command"]
-            
-            wait_time = 0
-            while self.pending_command and wait_time < timeout:
-                self.msleep(100)
-                wait_time += 0.1
-            
-            responses = self.command_responses.get(command, [])
-            return responses if responses else ["ERROR: No response"]
-            
-        except Exception as e:
-            return [f"ERROR: {e}"]
-    
     def _get_sim_identity(self) -> Optional[SIMIdentityInfo]:
+        """ดึงข้อมูล SIM identity"""
         try:
             sim_info = SIMIdentityInfo()
             
-            imsi_responses = self._send_command_and_wait("AT+CIMI")
+            # ดึง IMSI
+            imsi_responses = self._send_command_and_wait_direct("AT+CIMI")
             for response in imsi_responses:
-                imsi_match = re.search(r'(\d{15})', response)
-                if imsi_match:
-                    sim_info.imsi = imsi_match.group(1)
+                if response and response.isdigit() and len(response) >= 15:
+                    sim_info.imsi = response[:15]
                     self._parse_imsi(sim_info)
                     break
+                else:
+                    # หา IMSI ใน response ที่มีข้อความอื่นด้วย
+                    imsi_match = re.search(r'(\d{15})', response)
+                    if imsi_match:
+                        sim_info.imsi = imsi_match.group(1)
+                        self._parse_imsi(sim_info)
+                        break
             
-            iccid_responses = self._send_command_and_wait("AT+CCID")
-            if "ERROR" in str(iccid_responses):
-                iccid_responses = self._send_command_and_wait("AT+QCCID")
+            # ดึง ICCID
+            iccid_responses = self._send_command_and_wait_direct("AT+CCID")
+            if not any('+CCID:' in r for r in iccid_responses):
+                iccid_responses = self._send_command_and_wait_direct("AT+QCCID")
             
             for response in iccid_responses:
-                iccid_match = re.search(r'(\d{18,22})', response)
-                if iccid_match:
-                    sim_info.iccid = iccid_match.group(1)
-                    self._parse_iccid(sim_info)
-                    break
+                if '+CCID:' in response or '+QCCID:' in response:
+                    iccid_match = re.search(r'(\d{18,22})', response)
+                    if iccid_match:
+                        sim_info.iccid = iccid_match.group(1)
+                        self._parse_iccid(sim_info)
+                        break
             
-            cnum_responses = self._send_command_and_wait("AT+CNUM")
+            # ดึงเบอร์โทรศัพท์
+            cnum_responses = self._send_command_and_wait_direct("AT+CNUM")
             for response in cnum_responses:
-                phone_match = re.search(r'"([+\d]+)"', response)
-                if phone_match:
-                    sim_info.phone_number = phone_match.group(1)
-                    break
+                if '+CNUM:' in response:
+                    phone_match = re.search(r'"([+\d]+)"', response)
+                    if phone_match:
+                        sim_info.phone_number = phone_match.group(1)
+                        break
             
             self._validate_sim_info(sim_info)
             
@@ -226,6 +410,7 @@ class EnhancedSignalQualityThread(QThread):
             return None
     
     def _parse_imsi(self, sim_info: SIMIdentityInfo):
+        """วิเคราะห์ IMSI"""
         if not sim_info.imsi or len(sim_info.imsi) < 15:
             return
         
@@ -260,6 +445,7 @@ class EnhancedSignalQualityThread(QThread):
             print(f"Error parsing IMSI: {e}")
     
     def _parse_iccid(self, sim_info: SIMIdentityInfo):
+        """วิเคราะห์ ICCID"""
         if not sim_info.iccid:
             return
         
@@ -268,18 +454,17 @@ class EnhancedSignalQualityThread(QThread):
                 sim_info.iin = sim_info.iccid[:7]
                 sim_info.account_id = sim_info.iccid[7:-1]
                 sim_info.check_digit = sim_info.iccid[-1]
-                
                 sim_info.iccid_valid = self._luhn_check(sim_info.iccid)
                         
         except Exception as e:
             print(f"Error parsing ICCID: {e}")
     
     def _luhn_check(self, number: str) -> bool:
+        """ตรวจสอบ Luhn checksum"""
         try:
             digits = [int(d) for d in number]
             checksum = 0
             
-            # Process from right to left, doubling every second digit
             for i in range(len(digits) - 2, -1, -2):
                 digits[i] *= 2
                 if digits[i] > 9:
@@ -292,6 +477,7 @@ class EnhancedSignalQualityThread(QThread):
             return False
     
     def _validate_sim_info(self, sim_info: SIMIdentityInfo):
+        """ตรวจสอบความถูกต้องของข้อมูล SIM"""
         try:
             if not sim_info.imsi or len(sim_info.imsi) != 15:
                 sim_info.sim_valid = False
@@ -299,99 +485,26 @@ class EnhancedSignalQualityThread(QThread):
             
             if sim_info.mcc not in self.mcc_database:
                 sim_info.sim_valid = False
-            
-            if sim_info.iccid and not sim_info.iccid_valid:
-                pass
                 
         except Exception as e:
             print(f"Error validating SIM: {e}")
     
-    def _measure_signal(self) -> Optional[SignalMeasurement]:
-        try:
-            measurement = SignalMeasurement(
-                timestamp=datetime.now().strftime("%H:%M:%S")
-            )
+    def start_monitoring(self):
+        """เริ่มการตรวจสอบ"""
+        if not self.serial_thread or not self.serial_thread.isRunning():
+            self.error_occurred.emit("No active serial connection available")
+            return
             
-            csq_responses = self._send_command_and_wait("AT+CSQ")
-            for response in csq_responses:
-                match = re.search(r'\+CSQ:\s*(\d+),(\d+)', response)
-                if match:
-                    rssi_raw = int(match.group(1))
-                    ber_raw = int(match.group(2))
-                    
-                    if rssi_raw == 0:
-                        measurement.rssi = -113
-                    elif rssi_raw == 31:
-                        measurement.rssi = -51
-                    elif 1 <= rssi_raw <= 30:
-                        measurement.rssi = -113 + (rssi_raw * 2)
-                    
-                    if ber_raw != 99:
-                        measurement.ber = ber_raw * 0.1
-                    
-                    measurement.signal_bars = self._calculate_bars(measurement.rssi)
-                    measurement.quality_score = self._calculate_quality(measurement.rssi, measurement.ber)
-                    break
-            
-            cesq_responses = self._send_command_and_wait("AT+CESQ")
-            for response in cesq_responses:
-                match = re.search(r'\+CESQ:\s*(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)', response)
-                if match:
-                    values = [int(x) for x in match.groups()]
-                    rxlev, ber, rscp, ecn0, rsrq, rsrp = values
-                    
-                    if rsrq != 255:
-                        measurement.rsrq = int(-19.5 + (rsrq * 0.5))
-                    if rsrp != 255:
-                        measurement.rsrp = -141 + rsrp
-                    break
-            
-            if not measurement.carrier or measurement.carrier == "Unknown":
-                cops_responses = self._send_command_and_wait("AT+COPS?")
-                for response in cops_responses:
-                    match = re.search(r'"([^"]*)"', response)
-                    if match:
-                        measurement.carrier = match.group(1)
-                        break
-            
-            if self.sim_identity and self.sim_identity.carrier:
-                measurement.carrier = self.sim_identity.carrier
-            
-            creg_responses = self._send_command_and_wait("AT+CREG?")
-            for response in creg_responses:
-                if "+CREG:" in response:
-                    measurement.network_type = "4G/LTE"
-                    break
-            
-            return measurement
-            
-        except Exception as e:
-            print(f"Error measuring signal: {e}")
-            return None
-    
-    def _calculate_bars(self, rssi: int) -> int:
-        if rssi >= -70:
-            return 5
-        elif rssi >= -80:
-            return 4
-        elif rssi >= -90:
-            return 3
-        elif rssi >= -100:
-            return 2
-        elif rssi >= -110:
-            return 1
-        else:
-            return 0
-    
-    def _calculate_quality(self, rssi: int, ber: float) -> float:
-        if rssi == -999:
-            return 0.0
+        self.monitoring = True
+        self.start()
         
-        rssi_score = max(0, min(100, (rssi + 113) * 100 / 62))
-        
-        ber_score = max(0, min(100, 100 - (ber * 10))) if ber < 99 else 50
-        
-        return (rssi_score * 0.7) + (ber_score * 0.3)
+    def stop_monitoring(self):
+        """หยุดการตรวจสอบ"""
+        self.monitoring = False
+        self.current_command = None
+        self.temp_responses.clear()
+        self.quit()
+        self.wait()
 
 
 class EnhancedSIMSignalQualityWindow(QDialog):
@@ -407,12 +520,13 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         self.measurements_history = []
         self.auto_scroll = True
         self.sim_identity = None  # Store SIM info
+        self.setup_signal_response_display()
         
         self.setup_ui()
         self.apply_styles()
         
         if self.shared_serial_thread and self.shared_serial_thread.isRunning():
-            self.connection_status.setText("🔗 Using shared connection")
+            self.connection_status.setText("Using shared connection")
             self.start_btn.setEnabled(True)
         else:
             self.connection_status.setText("🔴 No shared connection")
@@ -420,6 +534,34 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             QMessageBox.warning(self, "Connection Required", 
                               "Please ensure the main window has an active serial connection before using Signal Quality Checker.")
     
+    def setup_signal_response_display(self):
+        """เพิ่ม response display สำหรับ Signal Quality commands"""
+        # เพิ่มใน create_realtime_panel หรือ create_analysis_panel
+        signal_response_group = QGroupBox("Signal Commands & Responses")
+        response_layout = QVBoxLayout()
+        
+        self.signal_response_display = QTextEdit()
+        self.signal_response_display.setReadOnly(True)
+        self.signal_response_display.setMaximumHeight(120)
+        self.signal_response_display.setPlaceholderText("Signal quality commands and responses...")
+        self.signal_response_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                padding: 5px;
+                font-family: 'Consolas', 'Monaco', monospace;
+                font-size: 10px;
+            }
+        """)
+        
+        response_layout.addWidget(self.signal_response_display)
+        signal_response_group.setLayout(response_layout)
+        
+        # เพิ่มเข้าไปใน left panel ของ create_realtime_panel
+        # หาบรรทัดที่มี layout.addWidget(indicator_group) และเพิ่มหลังจากนั้น
+        return signal_response_group
+        
     def setup_ui(self):
         self.setWindowTitle("📶 Enhanced SIM Signal Quality Checker")
         self.setMinimumSize(1300, 900)
@@ -615,6 +757,10 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         
         current_group.setLayout(current_layout)
         layout.addWidget(current_group)
+
+        # เพิ่ม Signal Response Display
+        signal_response_group = self.setup_signal_response_display()
+        layout.addWidget(signal_response_group)
         
         # Signal Graph
         graph_group = QGroupBox("📈 Real-time Signal Graph")
@@ -652,13 +798,8 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         indicator_group = QGroupBox("📶 Signal Strength")
         indicator_layout = QVBoxLayout()
         
-        # ✅ สร้าง HBoxLayout สำหรับแถวแรก
+        # สร้าง HBoxLayout สำหรับแถวแรก
         row = QHBoxLayout()  # ← เพิ่มบรรทัดนี้
-        
-        # ไอคอนทางซ้าย
-        # icon_lbl = QLabel("📶")
-        # icon_lbl.setFixedWidth(24)
-        # icon_lbl.setAlignment(Qt.AlignCenter)
         
         # วิดเจ็ตแท่งสัญญาณแบบอนิเมชั่น
         self.signal_widget = SignalStrengthWidget()
@@ -711,7 +852,7 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             self.signal_slider.setValue(int(m.quality_score))
             self.quality_label.setText(f"Quality: {m.quality_score:.1f}%")
 
-            # คำนวณแถวในตารางจากดัชนีใน history
+            # คำนวดแถวในตารางจากดัชนีใน history
             total_rows = self.measurements_table.rowCount()
             total_hist = len(self.measurements_history)
             # ตารางจะลบหัวเมื่อเกิน 1000 แถว (ดู add_measurement_to_table) → หา offset ให้ตรง
@@ -744,7 +885,7 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         # แท็บหลัก
         tabs = QTabWidget(panel)
 
-        # 👉 สำคัญ: เมธอดเหล่านี้ต้อง return QWidget เสมอ
+        # สำคัญ: เมธอดเหล่านี้ต้อง return QWidget เสมอ
         # ถ้าปัจจุบัน return เป็น QLayout หรือ int ให้แก้ให้ return QWidget ที่ setLayout เรียบร้อย
         sim_tab = self.create_sim_info_tab()              # ต้องเป็น QWidget
         meas_tab = self.create_measurements_tab()         # ต้องเป็น QWidget
@@ -847,7 +988,7 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         layout.addWidget(network_group)
         
         # MCC/MNC Database Info
-        # database_group = QGroupBox("📚 MCC/MNC Database")
+        # database_group = QGroupBox("MCC/MNC Database")
         # database_layout = QVBoxLayout()
         
         self.database_text = QTextEdit()
@@ -1014,7 +1155,15 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             self.monitoring_thread.error_occurred.connect(self.handle_error)
             self.monitoring_thread.sim_info_updated.connect(self.update_sim_info_display)
             
+            # เพิ่มบรรทัดนี้
+            if hasattr(self.monitoring_thread, 'command_response_signal'):
+                self.monitoring_thread.command_response_signal.connect(self.update_signal_response_display)
+            
             self.monitoring_thread.start_monitoring()
+
+            # หลังจาก self.monitoring_thread.start_monitoring()
+            if hasattr(self.parent, 'display_manager'):
+                self.parent.display_manager.filter_manager.set_signal_monitoring(True)
             
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
@@ -1032,6 +1181,27 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "Start Error", f"Failed to start monitoring: {e}")
     
+    def update_signal_response_display(self, text):
+        """อัพเดตการแสดงผล response ของ Signal Quality"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        formatted_text = f"[{timestamp}] {text}"
+        
+        current_text = self.signal_response_display.toPlainText()
+        if current_text:
+            self.signal_response_display.setPlainText(current_text + "\n" + formatted_text)
+        else:
+            self.signal_response_display.setPlainText(formatted_text)
+        
+        # เลื่อนไปท้ายสุด
+        cursor = self.signal_response_display.textCursor()
+        cursor.movePosition(cursor.End)
+        self.signal_response_display.setTextCursor(cursor)
+
+        # จำกัดจำนวนบรรทัด
+        lines = self.signal_response_display.toPlainText().split('\n')
+        if len(lines) > 100:
+            self.signal_response_display.setPlainText('\n'.join(lines[-100:]))
+
     def stop_monitoring(self):
         try:
             if self.monitoring_thread:
@@ -1041,13 +1211,18 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             if hasattr(self, 'timer'):
                 self.timer.stop()
             
+            # … หลัง self.timer.stop() และก่อน/หลังตั้งสถานะปุ่มก็ได้
+            p = getattr(self, 'parent', None)
+            if p and hasattr(p, 'display_manager'):
+                p.display_manager.filter_manager.set_signal_monitoring(False)
+
             self.start_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
             self.interval_spin.setEnabled(True)
             self.include_sim_check.setEnabled(True)
             
             if self.shared_serial_thread and self.shared_serial_thread.isRunning():
-                self.connection_status.setText("🔗 Using shared connection")
+                self.connection_status.setText("Using shared connection")
                 self.status_label.setText("⏹️ Monitoring stopped - Connection available")
             else:
                 self.connection_status.setText("🔴 No shared connection")
@@ -1089,52 +1264,8 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             self.sim_labels['roaming_status'].setText("❌ Roaming" if sim_info.roaming else "🏠 Home Network")
             self.sim_labels['sim_validation'].setText("✅ Valid SIM" if sim_info.sim_valid else "❌ Invalid SIM")
             
-            # MCC/MNC Database Info
-            self.update_mcc_mnc_database_info(sim_info)
-            
         except Exception as e:
             print(f"Error updating SIM info display: {e}")
-    
-#     def update_mcc_mnc_database_info(self, sim_info: SIMIdentityInfo):
-#         try:
-#             if not sim_info.mcc:
-#                 return
-                
-#             database_text = f"""
-# 📚 MCC/MNC DATABASE INFORMATION
-# {'='*50}
-
-# 🌍 Mobile Country Code (MCC): {sim_info.mcc}
-#    • Country: {sim_info.country or 'Unknown'}
-#    • ISO Code: {self.get_iso_code(sim_info.mcc)}
-
-# 📡 Mobile Network Code (MNC): {sim_info.mnc}
-#    • Carrier: {sim_info.carrier or 'Unknown'}
-#    • Network Type: {self.get_network_type(sim_info.mcc, sim_info.mnc)}
-
-# 🏔️ Complete IMSI Breakdown:
-#    • Full IMSI: {sim_info.imsi}
-#    • MCC: {sim_info.mcc} (Country: {sim_info.country})
-#    • MNC: {sim_info.mnc} (Network: {sim_info.carrier})
-#    • MSIN: {sim_info.msin} (Subscriber ID)
-
-# 💳 ICCID Analysis:
-#    • Full ICCID: {sim_info.iccid}
-#    • IIN: {sim_info.iin} (Issuer Identification)
-#    • Account ID: {sim_info.account_id}
-#    • Check Digit: {sim_info.check_digit}
-#    • Luhn Validation: {'✅ Passed' if sim_info.iccid_valid else '❌ Failed'}
-
-# 🔍 Network Analysis:
-#    • Home Network: {'Yes' if sim_info.home_network else 'No'}
-#    • Roaming: {'Active' if sim_info.roaming else 'Inactive'}
-#    • SIM Status: {'Valid' if sim_info.sim_valid else 'Invalid'}
-# """
-            
-#             self.database_text.setText(database_text)
-            
-#         except Exception as e:
-#             print(f"Error updating database info: {e}")
     
     def get_iso_code(self, mcc: str) -> str:
         mcc_db = {
@@ -1372,34 +1503,34 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             
             latest_measurement = self.measurements_history[-1]
             
-            # ✅ แก้ไข: ใช้ f-string หรือ .format() ให้ถูกต้อง
+            # แก้ไข: ใช้ f-string หรือ .format() ให้ถูกต้อง
             recommendations_text = f"""
-    🔍 ENHANCED SIGNAL ANALYSIS & RECOMMENDATIONS
-    =============================================
+🔍 ENHANCED SIGNAL ANALYSIS & RECOMMENDATIONS
+=============================================
 
-    📱 Current Status:
-    • Signal Strength: {latest_measurement.rssi} dBm
-    • Quality Score: {latest_measurement.quality_score:.1f}%
-    • Signal Grade: {self.get_signal_grade(latest_measurement.rssi)}
-    • Network: {latest_measurement.network_type}
-    • Carrier: {latest_measurement.carrier}
+📱 Current Status:
+• Signal Strength: {latest_measurement.rssi} dBm
+• Quality Score: {latest_measurement.quality_score:.1f}%
+• Signal Grade: {self.get_signal_grade(latest_measurement.rssi)}
+• Network: {latest_measurement.network_type}
+• Carrier: {latest_measurement.carrier}
 
-    """
-            # ✅ ลบบรรทัดที่ไม่ได้ใช้งาน (recommendations_text.format(...))
+"""
+            # แก้ไข: ลบบรรทัดที่ไม่ได้ใช้งาน (recommendations_text.format(...))
             
             if latest_measurement.sim_info:
                 sim_info = latest_measurement.sim_info
-                # ✅ แก้ไข: เปลี่ยนอิโมจิจาก 🏔️ เป็น 📱
+                # แก้ไข: เปลี่ยนอีโมจิจา 📏 เป็น 📱
                 recommendations_text += f"""
-    📱 SIM Information:
-    • IMSI: {sim_info.imsi}
-    • MCC: {sim_info.mcc} ({sim_info.country})
-    • MNC: {sim_info.mnc} ({sim_info.carrier})
-    • ICCID: {sim_info.iccid[:8]}...{sim_info.iccid[-4:] if sim_info.iccid else ''}
-    • Home Network: {'✅ Yes' if sim_info.home_network else '❌ No (Roaming)'}
-    • SIM Valid: {'✅ Yes' if sim_info.sim_valid else '❌ No'}
+📱 SIM Information:
+• IMSI: {sim_info.imsi}
+• MCC: {sim_info.mcc} ({sim_info.country})
+• MNC: {sim_info.mnc} ({sim_info.carrier})
+• ICCID: {sim_info.iccid[:8]}...{sim_info.iccid[-4:] if sim_info.iccid else ''}
+• Home Network: {'✅ Yes' if sim_info.home_network else '❌ No (Roaming)'}
+• SIM Valid: {'✅ Yes' if sim_info.sim_valid else '❌ No'}
 
-    """
+"""
             
             recommendations = self.generate_recommendations()
             if recommendations:
@@ -1417,50 +1548,50 @@ class EnhancedSIMSignalQualityWindow(QDialog):
                 recommendations_text += f"\n📊 Recent Trend: {trend}\n"
             
             if self.sim_identity:
-                # ✅ แก้ไข: เพิ่ม emoji ที่เหมาะสมและแก้ไขรูปแบบ
+                # แก้ไข: เพิ่ม emoji ที่เหมาะสมและแก้ไขรูปแบบ
                 roaming_status = '🌍 International Roaming' if self.sim_identity.roaming else '🏠 Home Network'
                 iccid_validation = '✅ Passed' if self.sim_identity.iccid_valid else '❌ Failed'
                 
                 recommendations_text += f"""
 
-    📚 MCC/MNC Analysis:
-    • Country Code (MCC): {self.sim_identity.mcc} = {self.sim_identity.country}
-    • Network Code (MNC): {self.sim_identity.mnc} = {self.sim_identity.carrier}
-    • Network Type: {self.get_network_type(self.sim_identity.mcc, self.sim_identity.mnc)}
-    • ISO Country: {self.get_iso_code(self.sim_identity.mcc)}
-    • Roaming Status: {roaming_status}
+📚 MCC/MNC Analysis:
+• Country Code (MCC): {self.sim_identity.mcc} = {self.sim_identity.country}
+• Network Code (MNC): {self.sim_identity.mnc} = {self.sim_identity.carrier}
+• Network Type: {self.get_network_type(self.sim_identity.mcc, self.sim_identity.mnc)}
+• ISO Country: {self.get_iso_code(self.sim_identity.mcc)}
+• Roaming Status: {roaming_status}
 
-    💳 ICCID Analysis:
-    • Full ICCID: {self.sim_identity.iccid}
-    • Issuer ID (IIN): {self.sim_identity.iin}
-    • Check Digit Validation: {iccid_validation}
-    • Card Length: {len(self.sim_identity.iccid) if self.sim_identity.iccid else 0} digits
+💳 ICCID Analysis:
+• Full ICCID: {self.sim_identity.iccid}
+• Issuer ID (IIN): {self.sim_identity.iin}
+• Check Digit Validation: {iccid_validation}
+• Card Length: {len(self.sim_identity.iccid) if self.sim_identity.iccid else 0} digits
 
-    """
+"""
             
-            # ✅ แก้ไข: ปรับปรุงส่วน Connection Info
+            # แก้ไข: ปรับปรุงส่วน Connection Info
             connection_status = "✅ Active" if self.shared_serial_thread and self.shared_serial_thread.isRunning() else "❌ Inactive"
             sim_info_included = "✅ Yes" if self.include_sim_check.isChecked() else "❌ No"
             
             recommendations_text += f"""
-    🔗 Connection Info:
-    • Using shared serial connection from main window
-    • Port: {self.port}
-    • Baudrate: {self.baudrate}
-    • Connection status: {connection_status}
-    • SIM Info included: {sim_info_included}
+🔗 Connection Info:
+• Using shared serial connection from main window
+• Port: {self.port}
+• Baudrate: {self.baudrate}
+• Connection status: {connection_status}
+• SIM Info included: {sim_info_included}
 
-    📊 Monitoring Statistics:
-    • Total measurements: {len(self.measurements_history)}
-    • Average quality: {sum(m.quality_score for m in self.measurements_history) / len(self.measurements_history):.1f}%
-    • Best signal: {max(m.rssi for m in self.measurements_history if m.rssi > -999)} dBm
-    • Worst signal: {min(m.rssi for m in self.measurements_history if m.rssi > -999)} dBm
+📊 Monitoring Statistics:
+• Total measurements: {len(self.measurements_history)}
+• Average quality: {sum(m.quality_score for m in self.measurements_history) / len(self.measurements_history):.1f}%
+• Best signal: {max(m.rssi for m in self.measurements_history if m.rssi > -999)} dBm
+• Worst signal: {min(m.rssi for m in self.measurements_history if m.rssi > -999)} dBm
 
-    ℹ️  Note: This Signal Quality Checker uses the same serial connection as the main window.
-    If you see connection issues, please check the main window's serial connection.
-    """
+ℹ️ Note: This Signal Quality Checker uses the same serial connection as the main window.
+If you see connection issues, please check the main window's serial connection.
+"""
             
-            # ✅ แก้ไข: เพิ่มการตั้งค่าข้อความและเลื่อนตำแหน่ง
+            # แก้ไข: เพิ่มการตั้งค่าข้อความและเลื่อนตำแหน่ง
             self.recommendations_text.setText(recommendations_text)
             
             # เลื่อนไปด้านบนเสมอ
@@ -1472,31 +1603,31 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             error_msg = f"Error updating recommendations: {e}"
             print(error_msg)
             
-            # ✅ แสดงข้อความ error ใน recommendations tab
+            # แสดงข้อความ error ใน recommendations tab
             error_text = f"""
-    ❌ ERROR IN RECOMMENDATIONS
-    ==========================
+❌ ERROR IN RECOMMENDATIONS
+==========================
 
-    An error occurred while generating recommendations:
-    {str(e)}
+An error occurred while generating recommendations:
+{str(e)}
 
-    🔧 Troubleshooting:
-    • Check console for detailed error messages
-    • Verify SIM data is available  
-    • Restart monitoring if needed
-    • Check serial connection status
+🔧 Troubleshooting:
+• Check console for detailed error messages
+• Verify SIM data is available  
+• Restart monitoring if needed
+• Check serial connection status
 
-    💡 Try:
-    • Stop and start monitoring again
-    • Check main window connection
-    • Verify port settings
-    • Restart the application if needed
+💡 Try:
+• Stop and start monitoring again
+• Check main window connection
+• Verify port settings
+• Restart the application if needed
 
-    Debug Info:
-    • Measurements: {len(self.measurements_history) if hasattr(self, 'measurements_history') else 'Unknown'}
-    • SIM Identity: {'Available' if hasattr(self, 'sim_identity') and self.sim_identity else 'Not available'}
-    • Serial Thread: {'Running' if hasattr(self, 'shared_serial_thread') and self.shared_serial_thread and self.shared_serial_thread.isRunning() else 'Not running'}
-    """
+Debug Info:
+• Measurements: {len(self.measurements_history) if hasattr(self, 'measurements_history') else 'Unknown'}
+• SIM Identity: {'Available' if hasattr(self, 'sim_identity') and self.sim_identity else 'Not available'}
+• Serial Thread: {'Running' if hasattr(self, 'shared_serial_thread') and self.shared_serial_thread and self.shared_serial_thread.isRunning() else 'Not running'}
+"""
             
             try:
                 self.recommendations_text.setText(error_text)
@@ -1647,64 +1778,6 @@ class EnhancedSIMSignalQualityWindow(QDialog):
                                 
         except Exception as e:
             QMessageBox.warning(self, "Export Failed", f"Failed to export data: {e}")
-
-    def create_measurements_tab_old_version(self):
-        tab = QWidget()
-        layout = QVBoxLayout()
-        
-        self.measurements_table = QTableWidget(0, 9) 
-        self.measurements_table.setHorizontalHeaderLabels([
-            "#",           
-            "Time", 
-            "RSSI (dBm)", 
-            "Quality (%)", 
-            "Bars", 
-            "RSRP (dBm)", 
-            "RSRQ (dB)", 
-            "BER (%)", 
-            "Carrier"
-        ])
-        
-        header = self.measurements_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        
-        self.measurements_table.verticalHeader().setDefaultSectionSize(25)
-        self.measurements_table.verticalHeader().setVisible(False)
-        
-        table_font = QFont("Arial", 10)
-        self.measurements_table.setFont(table_font)
-        
-        self.measurements_table.setColumnWidth(0, 40)   # Row Number
-        self.measurements_table.setColumnWidth(1, 70)   # Time
-        self.measurements_table.setColumnWidth(2, 85)   # RSSI
-        self.measurements_table.setColumnWidth(3, 80)   # Quality
-        self.measurements_table.setColumnWidth(4, 50)   # Bars
-        self.measurements_table.setColumnWidth(5, 85)   # RSRP
-        self.measurements_table.setColumnWidth(6, 80)   # RSRQ
-        self.measurements_table.setColumnWidth(7, 70)   # BER
-        self.measurements_table.setColumnWidth(8, 120)  # Carrier
-        
-        layout.addWidget(self.measurements_table)
-        
-        summary_layout = QHBoxLayout()
-        self.total_measurements_label = QLabel("Total: 0 measurements")
-        self.avg_quality_label = QLabel("Avg Quality: 0%")
-        self.monitoring_time_label = QLabel("Time: 00:00:00")
-        
-        summary_font = QFont("Arial", 10)
-        self.total_measurements_label.setFont(summary_font)
-        self.avg_quality_label.setFont(summary_font)
-        self.monitoring_time_label.setFont(summary_font)
-        
-        summary_layout.addWidget(self.total_measurements_label)
-        summary_layout.addWidget(self.avg_quality_label)
-        summary_layout.addWidget(self.monitoring_time_label)
-        summary_layout.addStretch()
-        
-        layout.addLayout(summary_layout)
-        
-        tab.setLayout(layout)
-        return tab
 
     def get_quality_color(self, quality: float) -> str:
         if quality >= 90:
@@ -1994,21 +2067,6 @@ class SignalVisualizationWidget(QWidget):
                 painter.drawEllipse(point[0]-2, point[1]-2, 4, 4)
 
 
-# ==================== INTEGRATION FUNCTIONS ====================
-
-def show_enhanced_sim_signal_quality_window(port: str = "", baudrate: int = 115200, parent=None, serial_thread=None):
-    
-    try:
-        window = EnhancedSIMSignalQualityWindow(port, baudrate, parent, serial_thread)
-        window.show()
-        return window
-    except Exception as e:
-        if parent:
-            QMessageBox.warning(parent, "Error", f"Cannot open Enhanced Signal Quality window: {e}")
-        else:
-            print(f"Error opening Enhanced Signal Quality window: {e}")
-        return None
-
 class ScrollableSignalGraph(SignalVisualizationWidget):
     pointSelected = pyqtSignal(int, SignalMeasurement)  # ส่ง (global_index, measurement)
     
@@ -2020,7 +2078,7 @@ class ScrollableSignalGraph(SignalVisualizationWidget):
         self._follow_live = True    
         self._dragging = False
         self._last_x = 0
-        self._click_moved = False  # ใหม่: แยก “ลาก” กับ “คลิก”
+        self._click_moved = False  # ใหม่: แยก "ลาก" กับ "คลิก"
 
     def add_measurement(self, measurement):
         self._history.append(measurement) 
@@ -2109,6 +2167,22 @@ class ScrollableSignalGraph(SignalVisualizationWidget):
             self._snap_to_tail()
         self._refresh_view_slice()
         self.update()
+
+
+# ==================== INTEGRATION FUNCTIONS ====================
+
+def show_enhanced_sim_signal_quality_window(port: str = "", baudrate: int = 115200, parent=None, serial_thread=None):
+    
+    try:
+        window = EnhancedSIMSignalQualityWindow(port, baudrate, parent, serial_thread)
+        window.show()
+        return window
+    except Exception as e:
+        if parent:
+            QMessageBox.warning(parent, "Error", f"Cannot open Enhanced Signal Quality window: {e}")
+        else:
+            print(f"Error opening Enhanced Signal Quality window: {e}")
+        return None
 
 
 # ==================== USAGE EXAMPLE ====================
