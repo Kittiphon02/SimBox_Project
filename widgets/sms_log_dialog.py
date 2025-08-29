@@ -753,6 +753,10 @@ class SmsLogDialog(QDialog):
                         status = ""
                         dt_str = dt_str.strip('"')
 
+                        # 🔧 ตัดเครื่องหมายคำพูดรอบนอกของข้อความ ถ้ามี
+                        if isinstance(message, str) and len(message) >= 2 and message[0] == '"' and message[-1] == '"':
+                            message = message[1:-1]
+
                         # แปลงวันที่สำหรับ inbox
                         date, time, datetime_obj = self.parse_inbox_datetime(dt_str)
                     else:  # Send หรือ Fail

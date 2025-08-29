@@ -53,7 +53,9 @@ class SimInfoWindow(QMainWindow):
         # เริ่มต้นการทำงาน
         self.initialize_application()
 
-        self.setup_enhanced_display_separation()
+        # self.setup_enhanced_display_separation()
+        self.serial_thread.at_response_signal.connect(self.update_at_result_display)
+        self.serial_thread.new_sms_signal.connect(self.sms_handler.process_new_sms_signal)
 
     def setup_enhanced_display_separation(self):
         """ตั้งค่าระบบแยกการแสดงผลแบบ Enhanced"""
@@ -70,12 +72,15 @@ class SimInfoWindow(QMainWindow):
     def _setup_enhanced_serial_connection(self):
         """ตั้งค่าการเชื่อมต่อ Serial แบบ Enhanced"""
         try:
-            # แทนที่ connection เดิม
-            self.serial_thread.at_response_signal.disconnect()
-        except:
+            # ❌ เดิม: ตัดทุก slot ออกหมด จน Monitor โดนตัดด้วย
+            # self.serial_thread.at_response_signal.disconnect()
+
+            # ✅ ใหม่: ตัดเฉพาะ slot เดิมของ "หน้าหลัก" เท่านั้น
+            self.serial_thread.at_response_signal.disconnect(self.update_at_result_display)
+        except Exception:
             pass
-        
-        # เชื่อมต่อใหม่ผ่าน display manager
+
+        # แล้วค่อยเชื่อมใหม่เข้าระบบกรอง
         self.serial_thread.at_response_signal.connect(self.handle_enhanced_response)
         print("✅ Enhanced Serial connection established")
 
@@ -849,7 +854,7 @@ class SimInfoWindow(QMainWindow):
         
     # ==================== 3. APPLICATION INITIALIZATION ====================
     def initialize_application(self):
-        """เริ่มต้นการทำงานของโปรแกรม"""
+        """เริ่มต้นการทำงานของโปรแกรม - Enhanced with SMS setup"""
         # รีเฟรชพอร์ต
         self.refresh_ports()
         self.refresh_sms_inbox_counter()
@@ -857,7 +862,7 @@ class SimInfoWindow(QMainWindow):
         # ทดสอบ network connection
         self.sync_manager.test_network_connection()
         
-        # เพิ่ม Auto Sync เมื่อเริ่มโปรแกรม
+        # เริ่ม Auto Sync เมื่อเริ่มโปรแกรม
         self.sync_manager.auto_sync_on_startup()
 
         # ถ้าเปิด auto ให้สตาร์ท monitor
@@ -872,8 +877,23 @@ class SimInfoWindow(QMainWindow):
             from managers.port_manager import SerialConnectionManager
             self.connection_manager = SerialConnectionManager(self)
             self.connection_manager.start_sms_monitor(port, baudrate)
+            
+            # ตั้งค่า SMS เพิ่มเติมหลังจากเชื่อมต่อ
+            if hasattr(self, 'serial_thread') and self.serial_thread:
+                # ใช้ QTimer เพื่อรอให้การเชื่อมต่อสมบูรณ์
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(2000, self.delayed_sms_setup)
         else:
-            self.update_at_result_display("[INIT] 📞 No valid serial port to start monitoring")
+            self.update_at_result_display("[INIT] No valid serial port to start monitoring")
+
+    def delayed_sms_setup(self):
+        """ตั้งค่า SMS หลังจากเชื่อมต่อแล้วสักครู่"""
+        if hasattr(self, 'serial_thread') and self.serial_thread and self.serial_thread.isRunning():
+            try:
+                self.update_at_result_display("[DELAYED SETUP] Configuring SMS settings...")
+                self.setup_sms_notifications()
+            except Exception as e:
+                self.update_at_result_display(f"[DELAYED SETUP ERROR] {e}")
 
     # ==================== 4. PORT & CONNECTION MANAGEMENT ====================
     def refresh_ports(self):
@@ -903,7 +923,7 @@ class SimInfoWindow(QMainWindow):
             self.update_at_result_display("[REFRESH] ❌ Refresh failed - no valid port")
 
     def setup_serial_monitor(self):
-        """ตั้งค่า Serial Monitor Thread"""
+        """ตั้งค่า Serial Monitor Thread - Enhanced with SMS setup"""
         port = self.port_combo.currentData()
         baudrate = int(self.baud_combo.currentText())
         
@@ -913,9 +933,90 @@ class SimInfoWindow(QMainWindow):
             self._cmt_buffer = None
             self._is_sending_sms = False
 
+            # Setup enhanced display connection
             self._setup_enhanced_serial_connection()
+            
+            # เชื่อมต่อ SMS signals
+            self.setup_sms_signal_connections()
+            
+            # Setup SMS notification commands
+            self.setup_sms_notifications()
 
+            # เปิด SMS monitor อัตโนมัติ
             self.auto_open_sms_monitor()
+
+    def setup_sms_signal_connections(self):
+        """เชื่อมต่อ SMS signals กับ handlers"""
+        if self.serial_thread:
+            try:
+                # เชื่อมต่อ SMS signal กับ SMS handler
+                self.serial_thread.new_sms_signal.connect(self.sms_handler.process_new_sms_signal)
+                
+                # เชื่อมต่อ SIM recovery signals
+                self.serial_thread.sim_failure_detected.connect(self.on_sim_failure_detected)
+                self.serial_thread.sim_ready_signal.connect(self.on_sim_ready_auto)
+                self.serial_thread.cpin_ready_detected.connect(self.on_cpin_ready_detected)
+                self.serial_thread.cpin_status_signal.connect(self.on_cpin_status_received)
+                
+                print("SMS signal connections established successfully")
+                
+            except Exception as e:
+                print(f"Error setting up SMS signal connections: {e}")
+    
+    def test_sms_configuration(self):
+        """ทดสอบการตั้งค่า SMS"""
+        if self.serial_thread:
+            try:
+                import time
+                time.sleep(0.5)
+                
+                # ตรวจสอบการตั้งค่า SMS
+                test_commands = [
+                    "AT+CMGF?",      # Check SMS mode
+                    "AT+CNMI?",      # Check notification settings
+                    "AT+CPMS?",      # Check storage settings
+                ]
+                
+                self.update_at_result_display("[SMS TEST] Testing SMS configuration...")
+                
+                for cmd in test_commands:
+                    self.serial_thread.send_command(cmd)
+                    time.sleep(0.3)
+                    
+            except Exception as e:
+                self.update_at_result_display(f"[SMS TEST ERROR] {e}")
+
+
+    def setup_sms_notifications(self):
+        """Setup AT commands สำหรับ SMS notifications"""
+        if self.serial_thread and self.serial_thread.isRunning():
+            try:
+                # รอให้ serial thread พร้อม
+                import time
+                time.sleep(0.5)
+                
+                # ส่งคำสั่งตั้งค่า SMS notifications
+                commands = [
+                    ("AT+CMGF=1", "Set SMS text mode"),
+                    ("AT+CNMI=2,2,0,1,0", "Enable SMS notifications"),
+                    ("AT+CPMS=\"SM\",\"SM\",\"SM\"", "Set SMS storage")
+                ]
+                
+                for cmd, description in commands:
+                    success = self.serial_thread.send_command(cmd)
+                    if success:
+                        self.update_at_result_display(f"[SMS SETUP] {description}: {cmd}")
+                    else:
+                        self.update_at_result_display(f"[SMS SETUP ERROR] Failed to send: {cmd}")
+                    time.sleep(0.2)
+                
+                self.update_at_result_display("[SMS SETUP] SMS notifications configured successfully")
+                
+                # ทดสอบการตั้งค่า
+                self.test_sms_configuration()
+                
+            except Exception as e:
+                self.update_at_result_display(f"[SMS SETUP ERROR] Failed to configure SMS: {e}")
 
     def start_sms_monitor(self):
         """เริ่ม SMS monitoring"""
@@ -924,6 +1025,14 @@ class SimInfoWindow(QMainWindow):
         
         if port and port != "Device not found":
             self.serial_connection_manager.start_sms_monitor(port, baudrate)
+
+    def test_sms_receiving(self):
+        """ทดสอบการรับ SMS"""
+        if self.serial_thread:
+            # Test commands
+            self.serial_thread.send_command("AT+CNMI?")  # Check SMS notification settings
+            self.serial_thread.send_command("AT+CMGL=\"ALL\"")  # List all SMS
+            self.update_at_result_display("[TEST] Testing SMS receiving setup...")
 
     def auto_open_sms_monitor(self):
         """เปิด SMS Real-time Monitor อัตโนมัติ"""
@@ -1099,9 +1208,16 @@ class SimInfoWindow(QMainWindow):
                 return
             self._notified_sms.add(key)
             
+            # 1) แสดงในหน้าหลัก
             display_text = f"[REAL-TIME SMS] {datetime_str} | {sender}: {message}"
             self.update_at_result_display(display_text)
-            
+
+            # 2) ✅ บันทึกลง log ด้วยฟังก์ชันที่คุณมีอยู่แล้ว
+            self._save_sms_to_inbox_log(sender, message, datetime_str)
+
+            # 3) แจ้ง LogDialog ให้โหลดข้อมูลใหม่
+            self.on_sms_log_updated()
+
         except Exception as e:
             print(f"Error handling real-time SMS: {e}")
     
@@ -1239,6 +1355,7 @@ class SimInfoWindow(QMainWindow):
     
     def update_at_result_display(self, result):
         """อัพเดทการแสดงผลลัพธ์ AT"""
+        
         current_text = self.at_result_display.toPlainText()
         if current_text:
             self.at_result_display.setPlainText(current_text + "\n" + result)

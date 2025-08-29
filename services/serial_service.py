@@ -86,43 +86,48 @@ class SerialMonitorThread(QThread):
                 self.serial_conn = None
     
     def process_received_line(self, line):
-        """ประมวลผลข้อมูลที่รับมา พร้อมแยกประเภท response - Fixed version"""
+        """ประมวลผลข้อมูลที่รับมา - Fixed SMS 2-line processing"""
         
-        # ตรวจสอบว่า response นี้มาจากคำสั่งประเภทไหน
-        response_source = self._determine_response_source(line)
-        
-        # ส่งไปยังที่เหมาะสม
-        if response_source == 'SMS':
-            # ส่งไป SMS Monitor เท่านั้น
-            if line.startswith("+CMTI:") or line.startswith("+CMT:") or self.cmt_buffer:
-                # ประมวลผล SMS
-                if line.startswith("+CMT:"):
-                    self.cmt_buffer = line
-                    return
-                elif self.cmt_buffer:
-                    header = self.cmt_buffer
-                    body = line
-                    self.cmt_buffer = None
-                    self.process_sms_message(header, body)
-                    return
-                else:
-                    self.new_sms_signal.emit(line)
-                    return
-        
-        # สำหรับ Signal Quality responses - ส่งไปทั้งหน้าหลักและ Signal Quality window
-        elif response_source == 'SIGNAL_QUALITY' or self._is_signal_response(line):
-            # ส่งไปทั้งสองที่
+        # ตรวจสอบ CMTI (SMS notification)
+        if line.startswith("+CMTI:"):
+            self.new_sms_signal.emit(line)
             self.at_response_signal.emit(line)
             return
         
-        elif response_source == 'MANUAL':
-            # ส่งไปหน้าหลักเท่านั้น
+        # ตรวจสอบ CMT (SMS content) - 2 line format
+        if line.startswith("+CMT:"):
+            # เก็บ header ไว้ใน buffer รอบรรทัดถัดไป
+            self.cmt_buffer = line
             self.at_response_signal.emit(line)
             return
+        elif self.cmt_buffer:
+            # บรรทัดนี้คือข้อความ SMS
+            header = self.cmt_buffer
+            body = line
+            self.cmt_buffer = None
+            
+            # ส่งรวมกันไป SMS handler
+            formatted_sms = f"{header}|{body}"
+            self.new_sms_signal.emit(formatted_sms)
+            self.at_response_signal.emit(f"[SMS BODY] {body}")
+            return
         
-        # อื่นๆ ส่งไปหน้าหลัก
-        else:
-            self.at_response_signal.emit(line)
+        # ตรวจสอบ SIM status responses
+        line_upper = line.upper().strip()
+        
+        if any(keyword in line_upper for keyword in ['NO SIM', 'SIM NOT INSERTED', 'SIM FAILURE']):
+            self.sim_failure_detected.emit()
+        elif '+CPIN:' in line_upper:
+            self.handle_cpin_response(line)
+        elif 'SMS READY' in line_upper or 'PB DONE' in line_upper:
+            self.sim_ready_signal.emit()
+        
+        # Recovery responses
+        if self.recovery_active and self.handle_recovery_response(line):
+            return
+        
+        # ส่วนอื่นๆ ไปหน้าหลัก
+        self.at_response_signal.emit(line)
 
     def _is_signal_response(self, line):
         """ตรวจสอบว่าเป็น Signal Quality response หรือไม่"""

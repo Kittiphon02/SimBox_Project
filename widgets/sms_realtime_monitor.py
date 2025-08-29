@@ -85,6 +85,7 @@ class SmsRealtimeMonitor(QDialog):
         self.serial_thread = serial_thread
         self._cmt_buffer = None
         self.monitoring = False
+        self._pending_cmgr = None   # เก็บ header CMGR ชั่วคราว
         
         # Initialize counters
         self.received_count = 0
@@ -100,6 +101,56 @@ class SmsRealtimeMonitor(QDialog):
         if self.serial_thread:
             self.serial_thread.at_response_signal.connect(self.handle_incoming_data)
 
+    def on_serial_line(self, line: str):
+        line = line.strip()
+
+        # 1) เจอ +CMTI ⇒ สั่งอ่านช่องนั้นทันที
+        #    +CMTI: "SM",18  หรือ +CMTI: "ME",23
+        m = re.match(r'\+CMTI:\s*"(\w+)",\s*(\d+)', line)
+        if m:
+            storage, idx = m.group(1), int(m.group(2))
+            # ยิงอ่านข้อความ
+            self.serial_thread.send_command(f'AT+CMGR={idx}\r')
+            return
+
+        # 2) ได้ header +CMGR: "REC UNREAD","+6699999","","25/08/28,11:24:02+28"
+        h = re.match(
+            r'\+CMGR:\s*"([^"]+)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]+)"',
+            line
+        )
+        if h:
+            status = h.group(1)       # "REC UNREAD"
+            sender = h.group(2)       # "+6699..."
+            # h.group(3) = alpha (มักว่าง)
+            dt_raw = h.group(4)       # "25/08/28,11:24:02+28"
+            self._pending_cmgr = {"sender": sender, "dt_raw": dt_raw}
+            return
+
+        # 3) บรรทัดถัดจาก +CMGR คือ "ตัวข้อความ"
+        if self._pending_cmgr is not None:
+            message = line
+            sender  = self._pending_cmgr["sender"]
+            dt_raw  = self._pending_cmgr["dt_raw"]
+
+            # แปลงวันที่แบบ inbox ให้ตรงกับ parser ฝั่ง Dialog
+            # dt_raw ตัวอย่าง "25/08/28,11:24:02+28"
+            # ให้คงรูปแบบ "DD/MM/YY,HH:MM:SS+TZ" ไว้
+            datetime_str = dt_raw
+
+            # → แจ้ง parent (SimInfoWindow) เพื่อบันทึกและอัพเดทหน้าจอ
+            try:
+                if hasattr(self.parent(), "_save_sms_to_inbox_log"):
+                    # เรียกฟังก์ชันที่คุณมีอยู่แล้ว
+                    self.parent()._save_sms_to_inbox_log(sender, message, datetime_str)
+                # ปล่อยสัญญาณให้ส่วนอื่น ๆ รับรู้
+                self.sms_received.emit(sender, message, datetime_str)
+                self.log_updated.emit()
+            except Exception as e:
+                print(f"[SMS MON] save log error: {e}")
+            finally:
+                self._pending_cmgr = None
+            return
+        
     # ==================== 2. UI SETUP ====================
     def setup_ui(self):
         """สร้าง UI components"""
@@ -284,32 +335,60 @@ class SmsRealtimeMonitor(QDialog):
         self.append_to_display("[SYSTEM] Monitoring data cleared")
 
     # ==================== 4. DATA HANDLING ====================
-    def handle_incoming_data(self, data_line):
+    def handle_incoming_data(self, data_line: str):
         """จัดการข้อมูลที่เข้ามา"""
+        line = data_line.strip()
+        if line.startswith('[') and '] ' in line[:12]:
+            line = line.split('] ', 1)[1]
+
         if not self.monitoring:
             return
-        
-        data = data_line.strip()
-        
-        # ตรวจจับ CMT header
-        if data.startswith("+CMT:"):
-            self._cmt_buffer = data
-            self.append_to_display(f"[CMT HEADER] {data}")
+
+        line = data_line.strip()
+
+        # -- [เพิ่ม] รองรับกรณี +CMTI: / +CMGR: โดยส่งต่อไป parser รวม --
+        if line.startswith("+CMTI:") or line.startswith("+CMGR:"):
+            self.on_serial_line(line)
             return
-            
-        # ตรวจจับข้อความ SMS ที่ติดตาม CMT header
+
+        # -- [เพิ่ม] ถ้ามีสถานะ pending จาก CMGR อยู่ แสดงว่าบรรทัดนี้คือ "ตัวข้อความ" --
+        if self._pending_cmgr is not None:
+            try:
+                message = line
+                sender  = self._pending_cmgr["sender"]
+                dt_raw  = self._pending_cmgr["dt_raw"]
+
+                # บันทึกและกระจายสัญญาณให้ส่วนอื่น
+                if hasattr(self.parent(), "_save_sms_to_inbox_log"):
+                    self.parent()._save_sms_to_inbox_log(sender, message, dt_raw)
+
+                self.sms_received.emit(sender, message, dt_raw)
+                self.log_updated.emit()
+                self.received_count += 1
+                self.saved_count += 1
+                self.update_stats()
+                self.append_to_display(f"[CMGR] {sender} | {dt_raw}")
+            finally:
+                self._pending_cmgr = None
+            return
+
+        # ===== เดิม: โหมด +CMT: (โมเด็มส่งเนื้อหาเข้ามาให้ตรง ๆ) =====
+        if line.startswith("+CMT:"):
+            self._cmt_buffer = line
+            self.append_to_display(f"[CMT HEADER] {line}")
+            return
+
         elif self._cmt_buffer:
             header = self._cmt_buffer
-            message_hex = data
+            message_hex = line
             self._cmt_buffer = None
-            
             try:
                 self.process_cmt_message(header, message_hex)
             except Exception as e:
                 self.error_count += 1
                 self.update_stats()
-                error_msg = f"[ERROR] Failed to process CMT: {e}"
-                self.append_to_display(error_msg)
+                self.append_to_display(f"[ERROR] Failed to process CMT: {e}")
+
     
     def process_cmt_message(self, header, message_hex):
         """ประมวลผลข้อความ CMT - Enhanced decoding"""
@@ -387,33 +466,6 @@ class SmsRealtimeMonitor(QDialog):
             error_msg = f"[ERROR] Processing SMS: {e}"
             self.append_to_display(error_msg)
 
-    def _decode_message_safely(self, message_hex):
-        """แปลงข้อความ UCS2 อย่างปลอดภัย - Fixed spacing"""
-        if not message_hex:
-            return ""
-        
-        try:
-            message_clean = message_hex.strip().replace('"', '').replace(' ', '')
-            print(f"🔍 DEBUG Message: Input hex = '{message_clean[:50]}...'")
-            
-            # ใช้ฟังก์ชัน decode_ucs2 ที่แก้ไขแล้ว
-            decoded = decode_ucs2(message_clean)
-            
-            # ✅ เพิ่มการตรวจสอบและแก้ไขข้อความที่ติดกัน
-            if decoded and decoded != message_clean:
-                # ตรวจหาคำที่ติดกัน (เช่น "Badboygirl" -> "Bad boy girl")
-                fixed_message = self._fix_concatenated_words(decoded)
-                print(f"✅ DEBUG Message: Final = '{fixed_message}'")
-                return fixed_message
-            
-            print(f"⚠️ DEBUG Message: Using original = '{decoded}'")
-            return decoded
-            
-        except Exception as e:
-            print(f"❌ DEBUG Message: Error = {e}")
-
-            return message_hex
-    
     def _fix_concatenated_words(self, text):
         """แก้ไขคำที่ติดกันในข้อความ - Simple word separation"""
         if not text:
