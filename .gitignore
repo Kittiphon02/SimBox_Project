@@ -7,3 +7,5 @@ __pycache__/
 
 # Logs
 log/*.csv
+
+printf "\n__pycache__/\n*.pyc\nlog/*.csv\nsettings.json\n" >> .gitignore
