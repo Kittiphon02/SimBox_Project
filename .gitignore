@@ -1,13 +1,15 @@
-/dist/
+# โฟลเดอร์ ใส่ / /
+/dist/ 
 /build/
 
 # Python cache
+# ไฟล์ที่อยู่ในโฟลเดอร์ /*
 __pycache__/
 *.pyc
-
 # Logs
 log/*.csv
 
+# ไฟล์ไม่ได้อยู่ในโฟลเดอร์
 settings.json
 
 printf "\n__pycache__/\n*.pyc\nlog/*.csv\nsettings.json\n" >> .gitignore
