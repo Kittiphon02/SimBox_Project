@@ -1,3 +1,5 @@
+# serial_service.py - FIXED VERSION
+
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer, QObject
 import serial
 import time
@@ -20,6 +22,9 @@ class SerialMonitorThread(QThread):
         self.serial_conn = None
         self.running = False
         self.cmt_buffer = None
+
+        # เพิ่มตัวแปรติดตาม background commands
+        self.last_command_was_background = False
         
         # ตัวแปรสำหรับ CPIN polling
         self.cpin_polling_active = False
@@ -37,7 +42,156 @@ class SerialMonitorThread(QThread):
         self.cpin_timer = QTimer()
         self.cpin_timer.timeout.connect(self.check_cpin_status)
         self.cpin_timer.setSingleShot(True)
+
+        # เพิ่มตัวแปรเก็บแหล่งที่มาของคำสั่ง
+        self.command_source = None  # 'MANUAL', 'SIGNAL_QUALITY', 'BACKGROUND'
+        self.command_source_queue = deque(maxlen=10)
         
+    def send_command_with_response(self, command, timeout=5):
+        """ส่งคำสั่ง AT และรอ response - METHOD ใหม่"""
+        import time
+        
+        try:
+            # ล้าง buffer เก่าก่อนส่งคำสั่ง
+            if hasattr(self, 'serial_connection') and self.serial_connection:
+                if self.serial_connection.in_waiting:
+                    self.serial_connection.read(self.serial_connection.in_waiting)
+            
+            # ส่งคำสั่งผ่าน method เดิม
+            success = self.send_command(command)
+            if not success:
+                return {'success': False, 'error': 'Failed to send command', 'response': ''}
+            
+            # รอและอ่าน response
+            start_time = time.time()
+            response_buffer = ""
+            
+            while time.time() - start_time < timeout:
+                if hasattr(self, 'serial_connection') and self.serial_connection:
+                    if self.serial_connection.in_waiting:
+                        try:
+                            data = self.serial_connection.read(self.serial_connection.in_waiting)
+                            response_buffer += data.decode('utf-8', errors='ignore')
+                            
+                            # ตรวจสอบ response termination
+                            response_upper = response_buffer.upper()
+                            if 'OK\r\n' in response_buffer or 'OK' in response_upper:
+                                return {'success': True, 'response': response_buffer.strip()}
+                            elif 'ERROR' in response_upper or '+CMS ERROR' in response_upper:
+                                return {'success': False, 'error': f"AT Command Error: {response_buffer.strip()}"}
+                                
+                        except Exception as decode_error:
+                            print(f"Response decode error: {decode_error}")
+                
+                time.sleep(0.1)
+            
+            # Timeout occurred
+            return {'success': False, 'error': 'Command timeout', 'response': response_buffer.strip()}
+            
+        except Exception as e:
+            return {'success': False, 'error': f"Send command error: {str(e)}", 'response': ''}
+    
+    def get_recent_response(self):
+        """ดึง response ล่าสุดที่มีใน buffer - METHOD เสริม"""
+        try:
+            if hasattr(self, 'serial_connection') and self.serial_connection:
+                if self.serial_connection.in_waiting:
+                    data = self.serial_connection.read(self.serial_connection.in_waiting)
+                    return data.decode('utf-8', errors='ignore')
+            return None
+        except Exception as e:
+            print(f"Get response error: {e}")
+            return None
+    
+    def send_at_command_with_prompt_wait(self, command, timeout=10):
+        """ส่งคำสั่ง AT และรอ SMS prompt '>' - METHOD สำหรับ SMS"""
+        import time
+        
+        try:
+            # ล้าง buffer
+            if hasattr(self, 'serial_connection') and self.serial_connection:
+                if self.serial_connection.in_waiting:
+                    self.serial_connection.read(self.serial_connection.in_waiting)
+            
+            # ส่งคำสั่ง
+            success = self.send_command(command)
+            if not success:
+                return {'success': False, 'error': 'Failed to send SMS command'}
+            
+            # รอ SMS prompt '>'
+            start_time = time.time()
+            response = ""
+            
+            while time.time() - start_time < timeout:
+                if hasattr(self, 'serial_connection') and self.serial_connection:
+                    if self.serial_connection.in_waiting:
+                        data = self.serial_connection.read(self.serial_connection.in_waiting)
+                        response += data.decode('utf-8', errors='ignore')
+                        
+                        # ตรวจหา SMS prompt
+                        if '> ' in response or '>' in response:
+                            return {'success': True, 'response': response.strip()}
+                        
+                        # ตรวจหา error
+                        if 'ERROR' in response.upper():
+                            return {'success': False, 'error': f"SMS Command Error: {response.strip()}"}
+                
+                time.sleep(0.1)
+            
+            return {'success': False, 'error': 'SMS prompt timeout'}
+            
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+    
+    def wait_for_sms_result(self, timeout=15):
+        """รอผลการส่ง SMS (+CMGS response) - METHOD สำหรับ SMS"""
+        import time
+        
+        try:
+            start_time = time.time()
+            response = ""
+            
+            while time.time() - start_time < timeout:
+                if hasattr(self, 'serial_connection') and self.serial_connection:
+                    if self.serial_connection.in_waiting:
+                        data = self.serial_connection.read(self.serial_connection.in_waiting)
+                        response += data.decode('utf-8', errors='ignore')
+                        
+                        # ตรวจสอบ SMS success
+                        if '+CMGS:' in response.upper() and 'OK' in response.upper():
+                            # หา message reference number
+                            import re
+                            ref_match = re.search(r'\+CMGS:\s*(\d+)', response)
+                            ref_number = ref_match.group(1) if ref_match else 'Unknown'
+                            
+                            return {
+                                'success': True, 
+                                'reference': ref_number, 
+                                'response': response.strip()
+                            }
+                        
+                        # ตรวจสอบ SMS error
+                        if ('ERROR' in response.upper() or 
+                            '+CMS ERROR' in response.upper() or
+                            '+CME ERROR' in response.upper()):
+                            
+                            return {
+                                'success': False, 
+                                'error': f"SMS Send Error: {response.strip()}"
+                            }
+                
+                time.sleep(0.2)
+            
+            return {'success': False, 'error': 'SMS result timeout'}
+            
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+        
+    def set_command_source(self, source):
+        """กำหนดแหล่งที่มาของคำสั่ง"""
+        self.command_source = source
+        self.command_source_queue.append(source)
+
     def run(self):
         """Main thread loop"""
         self.running = True
@@ -72,43 +226,85 @@ class SerialMonitorThread(QThread):
                 self.serial_conn = None
     
     def process_received_line(self, line):
-        """ประมวลผลข้อมูลที่รับมา - ทำความสะอาด"""
+        """ประมวลผลข้อมูลที่รับมา - Fixed SMS 2-line processing"""
         
-        # ตรวจสอบ recovery response
-        if self.recovery_active:
-            recovery_handled = self.handle_recovery_response(line)
-            if recovery_handled:
-                return
-        
-        # ตรวจสอบ CPIN response
-        if "CPIN:" in line:
-            self.handle_cpin_response(line)
+        # --- hide SMS setup echo ---
+        if line.strip().upper().startswith("AT+CMGF"):
             return
-        
-        # ตรวจสอบ SMS notifications
+    
+        # ตรวจสอบ CMTI (SMS notification)
         if line.startswith("+CMTI:"):
             self.new_sms_signal.emit(line)
+            self.at_response_signal.emit(line)
             return
         
+        # ตรวจสอบ CMT (SMS content) - 2 line format
         if line.startswith("+CMT:"):
+            # เก็บ header ไว้ใน buffer รอบรรทัดถัดไป
             self.cmt_buffer = line
+            self.at_response_signal.emit(line)
             return
-        
-        if self.cmt_buffer:
+        elif self.cmt_buffer:
+            # บรรทัดนี้คือข้อความ SMS
             header = self.cmt_buffer
             body = line
             self.cmt_buffer = None
-            self.process_sms_message(header, body)
+            
+            # ส่งรวมกันไป SMS handler
+            formatted_sms = f"{header}|{body}"
+            self.new_sms_signal.emit(formatted_sms)
+            self.at_response_signal.emit(f"[SMS BODY] {body}")
             return
         
-        # ตรวจสอบ SIM failure
-        if any(keyword in line.upper() for keyword in ["SIM NOT INSERTED", "SIM FAILURE", "SIM ERROR", "+SIMCARD: NOT AVAILABLE"]):
+        # ตรวจสอบ SIM status responses
+        line_upper = line.upper().strip()
+        
+        if any(keyword in line_upper for keyword in ['NO SIM', 'SIM NOT INSERTED', 'SIM FAILURE']):
             self.sim_failure_detected.emit()
+        elif '+CPIN:' in line_upper:
+            self.handle_cpin_response(line)
+        elif 'SMS READY' in line_upper or 'PB DONE' in line_upper:
+            self.sim_ready_signal.emit()
+        
+        # Recovery responses
+        if self.recovery_active and self.handle_recovery_response(line):
             return
         
-        # ส่งข้อมูลทั่วไปไปยัง UI
-        if line.strip():
-            self.at_response_signal.emit(line)
+        # ส่วนอื่นๆ ไปหน้าหลัก
+        self.at_response_signal.emit(line)
+
+    def _is_signal_response(self, line):
+        """ตรวจสอบว่าเป็น Signal Quality response หรือไม่"""
+        line_upper = line.upper().strip()
+        
+        # Signal Quality indicators
+        signal_indicators = ["+CSQ:", "+CESQ:", "+COPS:", "+CREG:", "+CIMI:", "+CCID:", "+QCCID:", "+CNUM:"]
+        
+        # ตรวจสอบ response patterns
+        if any(indicator in line_upper for indicator in signal_indicators):
+            return True
+        
+        # ตรวจสอบรูปแบบ CSQ response แบบเฉพาะตัวเลข เช่น "14,99"
+        if re.match(r'^\d+,\d+$', line.strip()):
+            return True
+        
+        return False
+
+    def _determine_response_source(self, line):
+        """กำหนดว่า response นี้มาจากแหล่งไหน - Enhanced version"""
+        line_upper = line.upper().strip()
+        
+        # ตรวจสอบ SMS responses
+        sms_indicators = ["+CMTI:", "+CMT:", "+CMGR:", "+CMGL:", "+CMGS:", "+CMS ERROR:"]
+        if any(indicator in line_upper for indicator in sms_indicators):
+            return 'SMS'
+        
+        # ตรวจสอบ Signal Quality responses
+        if self._is_signal_response(line):
+            return 'SIGNAL_QUALITY'
+        
+        # Default เป็น Manual
+        return 'MANUAL'
     
     def handle_recovery_response(self, line):
         """จัดการ response ของ recovery - แสดงเฉพาะที่จำเป็น"""
@@ -258,25 +454,49 @@ class SerialMonitorThread(QThread):
             self.at_response_signal.emit(f"[SMS ERROR] {e}")
     
     def send_command(self, command):
-        """ส่งคำสั่ง AT - แสดง [SENT] เฉพาะตอนไม่ recovery"""
+        """ส่งคำสั่ง AT พร้อมระบุแหล่งที่มา - Enhanced version"""
         if self.serial_conn and self.running:
             try:
                 cmd_bytes = f"{command}\r\n".encode()
                 self.serial_conn.write(cmd_bytes)
                 self.serial_conn.flush()
                 
-                # แสดง [SENT] เฉพาะตอนไม่ recovery
-                if not self.recovery_active:
+                # กำหนด source ตามประเภทคำสั่ง
+                if not self.command_source:
+                    background_commands = ["AT+CSQ", "AT+CESQ", "AT+COPS", "AT+CREG", "AT+CIMI", "AT+CCID", "AT+QCCID", "AT+CNUM"]
+                    if any(bg_cmd in command.upper() for bg_cmd in background_commands):
+                        self.command_source = 'SIGNAL_QUALITY'
+                    else:
+                        self.command_source = 'MANUAL'
+                
+                # บันทึก command กับ source
+                self.command_source_queue.append((command, self.command_source))
+                
+                # ✅ แก้ไขตรงนี้ - ปิดการแสดง SMS commands
+                sms_commands = ["AT+CMGF", "AT+CSCS", "AT+CSMP", "AT+CMGS"]
+                is_sms_command = any(sms_cmd in command.upper() for sms_cmd in sms_commands)
+                
+                # ส่ง signal ไปยังที่เหมาะสม
+                if self.command_source == 'MANUAL' and not is_sms_command:
+                    # แสดงเฉพาะ Manual commands ที่ไม่ใช่ SMS
                     self.at_response_signal.emit(f"[SENT] {command}")
+                elif self.command_source == 'SIGNAL_QUALITY':
+                    # ไม่ส่งไปหน้าหลัก เพราะจะแสดงใน Signal Quality window เอง
+                    pass
+                elif self.command_source == 'BACKGROUND':
+                    # ไม่แสดงเลย
+                    pass
+                # ✅ SMS commands จะไม่ถูกแสดงใน Response area อีกต่อไป
+                
+                # รีเซ็ต source
+                self.command_source = None
                 
                 return True
             except Exception as e:
                 self.at_response_signal.emit(f"[SEND ERROR] {e}")
                 return False
-        else:
-            self.at_response_signal.emit(f"[SEND ERROR] No serial connection available")
-            return False
-    
+        return False
+        
     def send_raw(self, data):
         """ส่งข้อมูลดิบ"""
         if self.serial_conn and self.running:

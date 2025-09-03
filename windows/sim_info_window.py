@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QComboBox, QGroupBox, QSizePolicy, QMessageBox,
     QSpacerItem, QTextEdit, QShortcut
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QKeySequence
 
 # core, managers, services, widgets, styles
@@ -17,12 +17,21 @@ from managers import (
 from services import load_sim_data, SerialMonitorThread
 from widgets import SimTableWidget
 from styles import MainWindowStyles
-from windows.at_command_helper import ATCommandHelperDialog
+from windows.at_command_helper import ATCommandHelper
 from services.sms_log import log_sms_sent
 from widgets.sms_log_dialog import SmsLogDialog
+from windows.enhanced_sim_signal_quality_window import show_enhanced_sim_signal_quality_window
+from managers.smart_command_manager import SmartCommandManager
+from datetime import datetime
+from PyQt5.QtWidgets import QFrame
+import types
+from collections import deque
+from time import monotonic
 
 class SimInfoWindow(QMainWindow):
     """หน้าต่างหลักของโปรแกรม SIM Management System"""
+    at_manual_signal  = pyqtSignal(str)   # สำหรับผล AT ที่ผู้ใช้กดเอง → ไปช่อง Response หน้าแรก
+    at_monitor_signal = pyqtSignal(str)   # สำหรับข้อความ real-time/URC → ไปหน้าต่าง SMS Monitor
     
     def __init__(self):
         super().__init__()
@@ -33,6 +42,11 @@ class SimInfoWindow(QMainWindow):
         self.init_variables()
         self.init_managers()
         
+        # เพิ่มตัวแปรเพื่อติดตามสถานะ dialog
+        self._active_dialogs = set()
+        self._is_showing_dialog = False
+        self._current_dialog = None
+
         # โหลดการตั้งค่าและสร้าง UI
         self.load_application_settings()
         self.setup_window()
@@ -43,9 +57,82 @@ class SimInfoWindow(QMainWindow):
         # เริ่มต้นการทำงาน
         self.initialize_application()
 
+        # self.setup_enhanced_display_separation()
+        self.serial_thread.at_response_signal.connect(self.update_at_result_display)
+        self.serial_thread.new_sms_signal.connect(self.sms_handler.process_new_sms_signal)
+
+    def show_single_warning(self, title, message):
+        """แสดง warning dialog แบบไม่ซ้อนทับ"""
+        
+        # หากกำลังแสดง dialog อยู่ ให้หยุดการทำงาน
+        if self._is_showing_dialog:
+            return False
+            
+        # หากมี dialog เดิมอยู่ ให้ปิดก่อน
+        if self._current_dialog:
+            self._current_dialog.close()
+            
+        self._is_showing_dialog = True
+        
+        try:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(title)
+            msg_box.setText(message)
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowModality(Qt.ApplicationModal)
+            
+            # เก็บ reference ไว้
+            self._current_dialog = msg_box
+            
+            # แสดง dialog แบบ blocking
+            result = msg_box.exec_()
+            return True
+            
+        finally:
+            # รีเซ็ตสถานะเมื่อปิด dialog
+            self._is_showing_dialog = False
+            self._current_dialog = None
+
+    def setup_enhanced_display_separation(self):
+        """ตั้งค่าระบบแยกการแสดงผลแบบ Enhanced"""
+        
+        # สร้าง Enhanced Display Manager
+        self.display_manager = EnhancedDisplayFilterManager(self)
+        
+        # เชื่อมต่อกับ Serial Thread ถ้ามี
+        if hasattr(self, 'serial_thread') and self.serial_thread:
+            self._setup_enhanced_serial_connection()
+            
+        print("✅ Enhanced Display Separation setup completed")
+    
+    def _setup_enhanced_serial_connection(self):
+        """ตั้งค่าการเชื่อมต่อ Serial แบบ Enhanced"""
+        try:
+            # ❌ เดิม: ตัดทุก slot ออกหมด จน Monitor โดนตัดด้วย
+            # self.serial_thread.at_response_signal.disconnect()
+
+            # ✅ ใหม่: ตัดเฉพาะ slot เดิมของ "หน้าหลัก" เท่านั้น
+            self.serial_thread.at_response_signal.disconnect(self.update_at_result_display)
+        except Exception:
+            pass
+
+        # แล้วค่อยเชื่อมใหม่เข้าระบบกรอง
+        self.serial_thread.at_response_signal.connect(self.handle_enhanced_response)
+        print("✅ Enhanced Serial connection established")
+
+    def handle_enhanced_response(self, response):
+        """จัดการ response ผ่านระบบ Enhanced Display Separation"""
+        if hasattr(self, 'display_manager'):
+            self.display_manager.process_response(response)
+        else:
+            # fallback ถ้าไม่มี display manager
+            self.update_at_result_display(response)
+    
     def init_variables(self):
         """เริ่มต้นตัวแปรสำคัญ"""
         self.serial_thread = None
+        self.netqual_mgr = None
+
         self.sims = []
         
         # SMS processing variables
@@ -68,6 +155,16 @@ class SimInfoWindow(QMainWindow):
         self._notified_sms = set()
 
         self.incoming_sms_count = 0
+
+    def write_manual_response(self, text: str):
+        self.write_manual_response(text)
+
+        # self.at_result_display.append(text)   # ช่อง Response ของหน้าหลัก
+
+    def write_monitor_response(self, text: str):
+        self.write_monitor_response(text)
+
+        # self.at_monitor_signal.emit(text)     # ส่งต่อไป SMS Monitor
 
     def init_managers(self):
         """เริ่มต้น manager classes ต่างๆ"""
@@ -162,24 +259,27 @@ class SimInfoWindow(QMainWindow):
         self.modem_group = modem_group
     
     def create_control_buttons(self, layout):
-        """สร้างปุ่มควบคุมต่างๆ - Updated version with SMS Inbox Badge"""
+        """สร้างปุ่มควบคุมต่างๆ - Updated version with improved Signal Quality button"""
         layout.addSpacing(16)
         
         button_width = 120
         
+        # ปุ่ม Refresh Ports
         self.btn_refresh = QPushButton("Refresh Ports")
         self.btn_refresh.setFixedWidth(button_width)
         layout.addWidget(self.btn_refresh)
         
+        # ปุ่ม ดูประวัติ SMS
         self.btn_smslog = QPushButton("ดูประวัติ SMS")
         self.btn_smslog.setFixedWidth(button_width)
         layout.addWidget(self.btn_smslog)
         
+        # ปุ่ม SMS Monitor
         self.btn_realtime_monitor = QPushButton("SMS Monitor")
         self.btn_realtime_monitor.setFixedWidth(button_width)
         layout.addWidget(self.btn_realtime_monitor)
 
-        # เพิ่มปุ่ม SIM Recovery
+        # ปุ่ม SIM Recovery
         self.btn_sim_recovery = QPushButton("SIM Recovery")
         self.btn_sim_recovery.setFixedWidth(button_width)
         self.btn_sim_recovery.clicked.connect(self.sim_recovery_manager.manual_sim_recovery)
@@ -205,7 +305,40 @@ class SimInfoWindow(QMainWindow):
         """)
         layout.addWidget(self.btn_sim_recovery)
         
-        # เพิ่มปุ่ม Sync
+        # ปุ่ม Signal Quality - ปรับแต่งใหม่
+        self.btn_signal_quality = QPushButton("📶 Signal Quality")
+        self.btn_signal_quality.setFixedWidth(button_width + 20)  # กว้างขึ้นเล็กน้อย
+        self.btn_signal_quality.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #9b59b6, stop:1 #8e44ad);
+                color: white;
+                border: 1px solid #7d3c98;
+                padding: 8px 12px;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: bold;
+                text-align: center;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #8e44ad, stop:1 #7d3c98);
+                border: 1px solid #6c3483;
+            }
+            QPushButton:pressed {
+                background: #7d3c98;
+                padding-top: 9px;
+                padding-bottom: 7px;
+            }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+                color: #7f8c8d;
+                border: 1px solid #95a5a6;
+            }
+        """)
+        layout.addWidget(self.btn_signal_quality)
+        
+        # ปุ่ม Sync
         self.btn_sync = QPushButton("🔄 Sync")
         self.btn_sync.setFixedWidth(100)
         self.btn_sync.clicked.connect(self.sync_manager.manual_sync)
@@ -231,15 +364,13 @@ class SimInfoWindow(QMainWindow):
         """)
         layout.addWidget(self.btn_sync)
         
-        # ==================== เพิ่ม SMS Inbox Badge Container ====================
-        # สร้าง container สำหรับ SMS Inbox Badge
+        # SMS Inbox Badge Container (เหมือนเดิม)
         sms_container = QWidget()
         sms_container.setFixedSize(160, 40)
         sms_layout = QHBoxLayout()
         sms_layout.setContentsMargins(0, 0, 0, 0)
         sms_layout.setSpacing(0)
         
-        # สร้าง SMS Inbox Badge
         self.sms_inbox_badge = QLabel("SMS Inbox")
         self.sms_inbox_badge.setAlignment(Qt.AlignCenter)
         self.sms_inbox_badge.setFixedSize(110, 35)
@@ -256,7 +387,6 @@ class SimInfoWindow(QMainWindow):
         """)
         sms_layout.addWidget(self.sms_inbox_badge)
         
-        # สร้าง Number Badge (แดงกลม)
         self.sms_count_badge = QLabel("0")
         self.sms_count_badge.setAlignment(Qt.AlignCenter)
         self.sms_count_badge.setFixedSize(28, 28)
@@ -272,11 +402,8 @@ class SimInfoWindow(QMainWindow):
             }
         """)
         
-        # วางตำแหน่ง Number Badge ให้อยู่มุมขวาบน
         sms_layout.addWidget(self.sms_count_badge)
         sms_layout.setAlignment(self.sms_count_badge, Qt.AlignTop | Qt.AlignRight)
-        
-        # ปรับตำแหน่งให้ Number Badge ลอยอยู่เหนือมุมขวาบน
         sms_layout.setContentsMargins(-15, 0, 5, 0)
         
         sms_container.setLayout(sms_layout)
@@ -440,8 +567,8 @@ class SimInfoWindow(QMainWindow):
         
         # อัพเดทปุ่มให้แสดงสถานะ
         if hasattr(self, 'btn_send_sms_main'):
-            self.btn_send_sms_main.setText("⚠️ No SIM")
-            self.btn_send_sms_main.setEnabled(True)  # ยังให้ส่งได้ เพื่อแสดง error message
+            self.btn_send_sms_main.setText("📵 No SIM")
+            self.btn_send_sms_main.setEnabled(True) 
 
     # เพิ่มเมธอดตรวจสอบสถานะ SIM แบบ manual
     def check_sim_status_manual(self):
@@ -561,12 +688,12 @@ class SimInfoWindow(QMainWindow):
         # ==================== FIXED HEADER LAYOUT ====================
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)  # เพิ่ม spacing
+        header_layout.setSpacing(8) 
 
         # Label "Response:"
         lbl = QLabel("Response:")
         lbl.setStyleSheet("font-weight: bold;")
-        lbl.setMinimumWidth(70)  # กำหนดความกว้างขั้นต่ำ
+        lbl.setMinimumWidth(70) 
         header_layout.addWidget(lbl)
 
         # Spacer เพื่อดันปุ่ม Hide ไปขวา
@@ -605,7 +732,7 @@ class SimInfoWindow(QMainWindow):
     def show_at_command_helper(self):
         """แสดงหน้าต่าง AT Command Helper"""
         try:
-            helper_dialog = ATCommandHelperDialog(self)
+            helper_dialog = ATCommandHelper(self)
             helper_dialog.exec_()
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Cannot open AT Command Helper: {e}")
@@ -658,62 +785,71 @@ class SimInfoWindow(QMainWindow):
         self.table.setStyleSheet(MainWindowStyles.get_table_style())
     
     def setup_connections(self):
-        """เชื่อมต่อ signals และ slots - Updated version"""
-        # Port management
+        """เชื่อมต่อ signals และ slots - Clean version"""
+
+        # ✅ Refresh ports
         self.btn_refresh.clicked.connect(self.refresh_ports)
-        
-        # Dialog management
+
+        # ✅ Dialogs
         self.btn_smslog.clicked.connect(self.dialog_manager.show_sms_log_dialog)
         self.btn_realtime_monitor.clicked.connect(self.open_realtime_monitor)
-        
-        # ⭐ เพิ่มการเชื่อมต่อปุ่ม SMS ที่ส่งไม่สำเร็จ
         if hasattr(self, 'btn_failed_sms'):
             self.btn_failed_sms.clicked.connect(self.show_failed_sms_dialog)
-        
-        # AT Command management
-        self.btn_send_at.clicked.connect(self.send_at_command_main)
-        self.btn_del_cmd.clicked.connect(self.remove_at_command_main)
-        self.btn_help.clicked.connect(self.show_at_command_helper)
-        
-        # SMS management - ใช้เมธอดที่อัพเดทแล้ว
-        self.btn_send_sms_main.clicked.connect(self.send_sms_main)
-        self.btn_show_sms.clicked.connect(self.sms_inbox_manager.show_inbox_sms)
-        self.btn_clear_sms_main.clicked.connect(self.sms_inbox_manager.clear_all_sms)
-        
-        # แก้ไข Enter key connections - ใช้วิธีที่ปลอดภัยกว่า
+
+        # ✅ Signal Quality
+        self.btn_signal_quality.clicked.connect(self.show_signal_quality_checker)
+
+        # ✅ AT Command (disconnect กันซ้ำก่อน)
+        for btn, slot in [
+            (self.btn_send_at, self.send_at_command_main),
+            (self.btn_del_cmd, self.remove_at_command_main),
+            (self.btn_help, self.show_at_command_helper),
+        ]:
+            try:
+                btn.clicked.disconnect()
+            except Exception:
+                pass
+            btn.clicked.connect(slot)
+
+        # ✅ SMS Management
+        for btn, slot in [
+            (self.btn_send_sms_main, self.send_sms_main),
+            (self.btn_show_sms, self.sms_inbox_manager.show_inbox_sms),
+            (self.btn_clear_sms_main, self.sms_inbox_manager.clear_all_sms),
+        ]:
+            try:
+                btn.clicked.disconnect()
+            except Exception:
+                pass
+            btn.clicked.connect(slot)
+
+        # ✅ Enter key binding (AT command)
         try:
-            # สำหรับ AT Command ComboBox
             if hasattr(self.at_combo_main, 'lineEdit'):
                 line_edit = self.at_combo_main.lineEdit()
                 if line_edit:
                     line_edit.returnPressed.connect(self.send_at_command_main)
-                    print("✅ AT Command Enter key connected successfully")
             else:
-                # วิธีสำรอง - ใช้ QComboBox signal
                 self.at_combo_main.editTextChanged.connect(self._handle_at_combo_change)
-                print("✅ AT Command fallback connection established")
-                    
         except Exception as e:
             print(f"❌ AT Command Enter key connection failed: {e}")
-            # วิธีสำรองสุดท้าย - ใช้ key event
             self.at_combo_main.installEventFilter(self)
 
+        # ✅ Enter key binding (Phone input)
         try:
-            # สำหรับ Phone number input
             self.input_phone_main.returnPressed.connect(self.send_sms_main)
-            print("✅ Phone input Enter key connected successfully")
-        except Exception as e:
-            print(f"❌ Phone input Enter key connection failed: {e}")
-            
+        except Exception:
+            pass
+
+        # ✅ Ctrl+Enter binding (SMS input)
         try:
-            # สำหรับ SMS text input - ใช้ Ctrl+Enter
             from PyQt5.QtWidgets import QShortcut
             from PyQt5.QtGui import QKeySequence
             sms_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self.input_sms_main)
             sms_shortcut.activated.connect(self.send_sms_main)
-            print("✅ SMS Ctrl+Enter shortcut connected successfully")
-        except Exception as e:
-            print(f"❌ SMS shortcut connection failed: {e}")
+        except Exception:
+            pass
+
 
     def _handle_at_combo_change(self, text):
         """Handle AT combo text change for fallback Enter key support"""
@@ -724,7 +860,7 @@ class SimInfoWindow(QMainWindow):
         """Event filter สำหรับ Enter key fallback"""
         if obj == self.at_combo_main:
             if event.type() == event.KeyPress:
-                if event.key() == 16777220:  # Enter key
+                if event.key() == 16777220:
                     self.send_at_command_main()
                     return True
         return super().eventFilter(obj, event)
@@ -750,7 +886,7 @@ class SimInfoWindow(QMainWindow):
         
     # ==================== 3. APPLICATION INITIALIZATION ====================
     def initialize_application(self):
-        """เริ่มต้นการทำงานของโปรแกรม"""
+        """เริ่มต้นการทำงานของโปรแกรม - Enhanced with SMS setup"""
         # รีเฟรชพอร์ต
         self.refresh_ports()
         self.refresh_sms_inbox_counter()
@@ -758,7 +894,7 @@ class SimInfoWindow(QMainWindow):
         # ทดสอบ network connection
         self.sync_manager.test_network_connection()
         
-        # เพิ่ม Auto Sync เมื่อเริ่มโปรแกรม
+        # เริ่ม Auto Sync เมื่อเริ่มโปรแกรม
         self.sync_manager.auto_sync_on_startup()
 
         # ถ้าเปิด auto ให้สตาร์ท monitor
@@ -773,8 +909,23 @@ class SimInfoWindow(QMainWindow):
             from managers.port_manager import SerialConnectionManager
             self.connection_manager = SerialConnectionManager(self)
             self.connection_manager.start_sms_monitor(port, baudrate)
+            
+            # ตั้งค่า SMS เพิ่มเติมหลังจากเชื่อมต่อ
+            if hasattr(self, 'serial_thread') and self.serial_thread:
+                # ใช้ QTimer เพื่อรอให้การเชื่อมต่อสมบูรณ์
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(2000, self.delayed_sms_setup)
         else:
-            self.update_at_result_display("[INIT] ❌ No valid serial port to start monitoring")
+            self.update_at_result_display("[INIT] No valid serial port to start monitoring")
+
+    def delayed_sms_setup(self):
+        """ตั้งค่า SMS หลังจากเชื่อมต่อแล้วสักครู่"""
+        if hasattr(self, 'serial_thread') and self.serial_thread and self.serial_thread.isRunning():
+            try:
+                self.update_at_result_display("[DELAYED SETUP] Configuring SMS settings...")
+                self.setup_sms_notifications()
+            except Exception as e:
+                self.update_at_result_display(f"[DELAYED SETUP ERROR] {e}")
 
     # ==================== 4. PORT & CONNECTION MANAGEMENT ====================
     def refresh_ports(self):
@@ -804,7 +955,7 @@ class SimInfoWindow(QMainWindow):
             self.update_at_result_display("[REFRESH] ❌ Refresh failed - no valid port")
 
     def setup_serial_monitor(self):
-        """ตั้งค่า Serial Monitor Thread"""
+        """ตั้งค่า Serial Monitor Thread - Enhanced with SMS setup"""
         port = self.port_combo.currentData()
         baudrate = int(self.baud_combo.currentText())
         
@@ -813,7 +964,91 @@ class SimInfoWindow(QMainWindow):
         if self.serial_thread:
             self._cmt_buffer = None
             self._is_sending_sms = False
+
+            # Setup enhanced display connection
+            self._setup_enhanced_serial_connection()
+            
+            # เชื่อมต่อ SMS signals
+            self.setup_sms_signal_connections()
+            
+            # Setup SMS notification commands
+            self.setup_sms_notifications()
+
+            # เปิด SMS monitor อัตโนมัติ
             self.auto_open_sms_monitor()
+
+    def setup_sms_signal_connections(self):
+        """เชื่อมต่อ SMS signals กับ handlers"""
+        if self.serial_thread:
+            try:
+                # เชื่อมต่อ SMS signal กับ SMS handler
+                self.serial_thread.new_sms_signal.connect(self.sms_handler.process_new_sms_signal)
+                
+                # เชื่อมต่อ SIM recovery signals
+                self.serial_thread.sim_failure_detected.connect(self.on_sim_failure_detected)
+                self.serial_thread.sim_ready_signal.connect(self.on_sim_ready_auto)
+                self.serial_thread.cpin_ready_detected.connect(self.on_cpin_ready_detected)
+                self.serial_thread.cpin_status_signal.connect(self.on_cpin_status_received)
+                
+                print("SMS signal connections established successfully")
+                
+            except Exception as e:
+                print(f"Error setting up SMS signal connections: {e}")
+    
+    def test_sms_configuration(self):
+        """ทดสอบการตั้งค่า SMS"""
+        if self.serial_thread:
+            try:
+                import time
+                time.sleep(0.5)
+                
+                # ตรวจสอบการตั้งค่า SMS
+                test_commands = [
+                    "AT+CMGF?",      # Check SMS mode
+                    "AT+CNMI?",      # Check notification settings
+                    "AT+CPMS?",      # Check storage settings
+                ]
+                
+                self.update_at_result_display("[SMS TEST] Testing SMS configuration...")
+                
+                for cmd in test_commands:
+                    self.serial_thread.send_command(cmd)
+                    time.sleep(0.3)
+                    
+            except Exception as e:
+                self.update_at_result_display(f"[SMS TEST ERROR] {e}")
+
+
+    def setup_sms_notifications(self):
+        """Setup AT commands สำหรับ SMS notifications"""
+        if self.serial_thread and self.serial_thread.isRunning():
+            try:
+                # รอให้ serial thread พร้อม
+                import time
+                time.sleep(0.5)
+                
+                # ส่งคำสั่งตั้งค่า SMS notifications
+                commands = [
+                    ("AT+CMGF=1", "Set SMS text mode"),
+                    ("AT+CNMI=2,2,0,1,0", "Enable SMS notifications"),
+                    ("AT+CPMS=\"SM\",\"SM\",\"SM\"", "Set SMS storage")
+                ]
+                
+                for cmd, description in commands:
+                    success = self.serial_thread.send_command(cmd)
+                    if success:
+                        self.update_at_result_display(f"[SMS SETUP] {description}: {cmd}")
+                    else:
+                        self.update_at_result_display(f"[SMS SETUP ERROR] Failed to send: {cmd}")
+                    time.sleep(0.2)
+                
+                self.update_at_result_display("[SMS SETUP] SMS notifications configured successfully")
+                
+                # ทดสอบการตั้งค่า
+                self.test_sms_configuration()
+                
+            except Exception as e:
+                self.update_at_result_display(f"[SMS SETUP ERROR] Failed to configure SMS: {e}")
 
     def start_sms_monitor(self):
         """เริ่ม SMS monitoring"""
@@ -822,6 +1057,14 @@ class SimInfoWindow(QMainWindow):
         
         if port and port != "Device not found":
             self.serial_connection_manager.start_sms_monitor(port, baudrate)
+
+    def test_sms_receiving(self):
+        """ทดสอบการรับ SMS"""
+        if self.serial_thread:
+            # Test commands
+            self.serial_thread.send_command("AT+CNMI?")  # Check SMS notification settings
+            self.serial_thread.send_command("AT+CMGL=\"ALL\"")  # List all SMS
+            self.update_at_result_display("[TEST] Testing SMS receiving setup...")
 
     def auto_open_sms_monitor(self):
         """เปิด SMS Real-time Monitor อัตโนมัติ"""
@@ -866,7 +1109,7 @@ class SimInfoWindow(QMainWindow):
         cmd = self.at_combo_main.currentText().strip()
         if not cmd:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Empty Command", "⚠️ Please enter an AT command")
+            QMessageBox.warning(self, "Empty Command", "📵 Please enter an AT command")
             return
         
         # ตรวจจับคำสั่งพิเศษ
@@ -902,60 +1145,96 @@ class SimInfoWindow(QMainWindow):
 
 
     def remove_at_command_main(self):
-        """ลบคำสั่ง AT ที่เลือกใน ComboBox"""
-        self.at_command_manager.remove_command_from_history(self.at_combo_main, self.at_combo_main)
+        self.at_command_manager.remove_command_from_history(self.at_combo_main)
 
     # ==================== 6. SMS HANDLING ====================
     def send_sms_main(self):
-        """ส่ง SMS จากหน้าหลัก - Updated version"""
+        """ปรับปรุงการส่ง SMS ให้ไม่มี dialog ซ้อนทับ"""
+        
+        # ตรวจสอบว่ากำลังแสดง dialog อยู่หรือไม่
+        if self._is_showing_dialog:
+            return
+            
         phone_number = self.input_phone_main.text().strip()
         message = self.input_sms_main.toPlainText().strip()
         
-        # ตรวจสอบข้อมูลที่ป้อน
-        if not phone_number:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Missing Phone Number", "⚠️ Please enter a phone number")
+        # รวม validation ทั้งหมดไว้ในที่เดียว
+        if not phone_number and not message:
+            self.show_single_warning(
+                "ข้อมูลไม่ครบถ้วน", 
+                "กรุณาใส่หมายเลขโทรศัพท์และข้อความที่ต้องการส่ง"
+            )
             self.input_phone_main.setFocus()
             return
-            
-        if not message:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Missing Message", "⚠️ Please enter a message to send")
+        elif not phone_number:
+            self.show_single_warning(
+                "ไม่มีหมายเลขโทรศัพท์", 
+                "กรุณาใส่หมายเลขโทรศัพท์ปลายทาง"
+            )
+            self.input_phone_main.setFocus()
+            return
+        elif not message:
+            self.show_single_warning(
+                "ไม่มีข้อความ", 
+                "กรุณาใส่ข้อความที่ต้องการส่ง"
+            )
             self.input_sms_main.setFocus()
             return
         
-        # ⭐ ใช้ SMS handler ที่ปรับปรุงแล้ว
+        # ตรวจสอบการเชื่อมต่อ serial
+        if not hasattr(self, 'serial_thread') or not self.serial_thread:
+            self.show_single_warning(
+                "ไม่มีการเชื่อมต่อ", 
+                "ไม่พบการเชื่อมต่อ serial!\n\nกรุณา:\n1. เลือก USB Port ที่ถูกต้อง\n2. คลิก 'Refresh Ports'\n3. ตรวจสอบการเชื่อมต่อโมเด็ม"
+            )
+            return
+            
+        if not self.serial_thread.isRunning():
+            self.show_single_warning(
+                "การเชื่อมต่อขาดหาย", 
+                "การเชื่อมต่อ serial ไม่ทำงาน!\n\nกรุณาคลิก 'Refresh Ports' เพื่อเชื่อมต่อใหม่"
+            )
+            return
+
+        # ดำเนินการส่ง SMS
         if hasattr(self, 'sms_handler'):
             try:
                 success = self.sms_handler.send_sms_main(phone_number, message)
                 if success:
-                    # ⭐ ลบการบันทึก log ออก เพราะ sms_handler จะจัดการให้แล้ว
-                    # log_sms_sent(phone_number, message, "ส่งออก (real-time)")
-
-                    # ปล่อยสัญญาณให้ reload log
-                    if hasattr(self, 'sms_monitor_dialog') and self.sms_monitor_dialog:
-                        self.sms_monitor_dialog.log_updated.emit()
-
-                    # ถ้ามีหน้าต่าง SMS Log เปิดอยู่ ให้รีโหลดทันที
-                    mon = getattr(self, 'sms_monitor_dialog', None)
-                    if mon:
-                        mon.log_updated.emit()
-
-                    self.update_at_result_display(f"[SMS] ✅ SMS sent successfully to {phone_number}")
+                    self.update_at_result_display(f"[SMS] ✅ ส่ง SMS ไปยัง {phone_number} สำเร็จ")
                     
                     # ล้างฟอร์มหลังส่งสำเร็จ
                     self.input_phone_main.clear()
                     self.input_sms_main.clear()
-                # ถ้า success = False จะจัดการใน sms_handler แล้ว
                     
             except Exception as e:
-                self.update_at_result_display(f"[SMS ERROR] ❌ Exception while sending SMS: {e}")
+                self.update_at_result_display(f"[SMS ERROR] ❌ เกิดข้อผิดพลาดในการส่ง SMS: {e}")
         else:
-            self.update_at_result_display("[SMS ERROR] ❌ SMS handler not available")
+            self.update_at_result_display("[SMS ERROR] ❌ SMS handler ไม่พร้อมใช้งาน")
 
     def show_loading_dialog(self):
-        """แสดง Loading Dialog"""
-        self.dialog_manager.show_loading_dialog()
+        """แสดง loading dialog โดยไม่แสดงข้อความ success อัตโนมัติ"""
+        # สร้าง loading widget แต่ตั้งค่าไม่ให้แสดง success message
+        if hasattr(self, 'loading_widget'):
+            # ตั้งค่าให้ loading widget ไม่แสดง "Successfully!" อัตโนมัติ
+            self._close_loading_widget_safely()
+    
+    def _close_loading_widget_safely(self):
+        """ปิด loading widget อย่างปลอดภัย"""
+        try:
+            if hasattr(self.parent, 'loading_widget') and self.parent.loading_widget:
+                if hasattr(self.parent.loading_widget, 'close'):
+                    self.parent.loading_widget.close()
+                elif hasattr(self.parent.loading_widget, 'hide'):
+                    self.parent.loading_widget.hide()
+                self.parent.loading_widget = None
+                
+            if hasattr(self.parent, 'loading_dialog') and self.parent.loading_dialog:
+                if hasattr(self.parent.loading_dialog, 'close'):
+                    self.parent.loading_dialog.close()
+                self.parent.loading_dialog = None
+        except Exception as e:
+            print(f"Warning: Could not close loading widget: {e}")
 
     # เพิ่มเมธอดใหม่สำหรับแสดงรายการ SMS ที่ส่งไม่สำเร็จ
     def show_failed_sms_dialog(self):
@@ -963,8 +1242,8 @@ class SimInfoWindow(QMainWindow):
         try:
             # ใช้ค่า index 2 สำหรับ SMS Fail
             dlg = SmsLogDialog(parent=self)
-            dlg.combo.setCurrentIndex(2)  # เลือก "SMS Fail"
-            dlg.load_log()  # โหลดข้อมูล
+            dlg.combo.setCurrentIndex(2)
+            dlg.load_log() 
             
             dlg.setModal(False)
             dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | 
@@ -998,9 +1277,16 @@ class SimInfoWindow(QMainWindow):
                 return
             self._notified_sms.add(key)
             
+            # 1) แสดงในหน้าหลัก
             display_text = f"[REAL-TIME SMS] {datetime_str} | {sender}: {message}"
             self.update_at_result_display(display_text)
-            
+
+            # 2) ✅ บันทึกลง log ด้วยฟังก์ชันที่คุณมีอยู่แล้ว
+            self._save_sms_to_inbox_log(sender, message, datetime_str)
+
+            # 3) แจ้ง LogDialog ให้โหลดข้อมูลใหม่
+            self.on_sms_log_updated()
+
         except Exception as e:
             print(f"Error handling real-time SMS: {e}")
     
@@ -1062,7 +1348,7 @@ class SimInfoWindow(QMainWindow):
                 self.sim_recovery_in_progress = False
                 self.show_non_blocking_message(
                     "SIM Recovery Failed",
-                    f"❌ SIM recovery failed!\n\nSIM status: {status}\n\nPlease enter PIN/PUK manually."
+                    f"📵 SIM recovery failed!\n\nSIM status: {status}\n\nPlease enter PIN/PUK manually."
                 )
 
     def finalize_manual_recovery(self):
@@ -1084,15 +1370,21 @@ class SimInfoWindow(QMainWindow):
                 f"✅ SIM recovery completed successfully!\n\nSIM Information:\n• Phone: {self.sims[0].phone}\n• Carrier: {self.sims[0].carrier}\n• Signal: {self.sims[0].signal}"
             )
         else:
-            self.update_at_result_display(f"[MANUAL] ⚠️ Recovery completed but SIM data not fully available")
+            self.update_at_result_display(f"[MANUAL] 📵 Recovery completed but SIM data not fully available")
 
     # ==================== 8. DIALOG MANAGEMENT ====================
     def open_realtime_monitor(self):
-        """เปิดหน้าต่าง SMS Real-time Monitor"""
-        port = self.port_combo.currentData()
-        baudrate = int(self.baud_combo.currentText())
-        
-        self.dialog_manager.show_sms_realtime_monitor(port, baudrate, self.serial_thread)
+        if not self.sms_monitor_dialog:
+            port = self.current_port   # หรือค่าพอร์ตที่คุณใช้จริง
+            baud = self.current_baud   # หรือค่า baudrate ที่คุณใช้จริง
+            self.sms_monitor_dialog = SmsRealtimeMonitor(
+                port, baud, parent=self, serial_thread=self.serial_thread
+            )
+            self.at_monitor_signal.connect(self.sms_monitor_dialog.append_from_main)   # ★
+
+        self.sms_monitor_dialog.show()
+        self.sms_monitor_dialog.raise_()
+        self.sms_monitor_dialog.activateWindow()
 
     def show_sms_log_for_phone(self, phone):
         """แสดงประวัติ SMS สำหรับเบอร์ที่ระบุ"""
@@ -1132,6 +1424,7 @@ class SimInfoWindow(QMainWindow):
     
     def update_at_result_display(self, result):
         """อัพเดทการแสดงผลลัพธ์ AT"""
+        
         current_text = self.at_result_display.toPlainText()
         if current_text:
             self.at_result_display.setPlainText(current_text + "\n" + result)
@@ -1165,6 +1458,14 @@ class SimInfoWindow(QMainWindow):
     def closeEvent(self, event):
         """จัดการเมื่อปิดหน้าต่างหลัก"""
         try:
+            # ปิด dialog ที่เปิดอยู่
+            if self._current_dialog:
+                self._current_dialog.close()
+                
+            # รีเซ็ตสถานะ
+            self._is_showing_dialog = False
+            self._active_dialogs.clear()
+
             # บันทึกการตั้งค่า
             geometry = self.geometry()
             self.settings_manager.update_window_geometry(
@@ -1186,3 +1487,762 @@ class SimInfoWindow(QMainWindow):
             print(f"Error during close: {e}")
         
         event.accept()
+
+    def show_connection_warning(self):
+        """แสดงคำเตือนการเชื่อมต่อแบบไม่ซ้อนทับ"""
+        if not self._is_showing_dialog:
+            self.show_single_warning(
+                "ตรวจสอบการเชื่อมต่อ", 
+                "กรุณาตรวจสอบ:\n• USB Port ถูกต้อง\n• โมเด็มเชื่อมต่อแล้ว\n• Baudrate ถูกต้อง"
+            )
+
+    def show_signal_quality_checker(self):
+        """เปิดหน้าต่าง Enhanced Signal Quality Checker - Enhanced version"""
+        try:
+            port = self.port_combo.currentData()
+            baudrate = int(self.baud_combo.currentText())
+            
+            if not port or port == "Device not found":
+                QMessageBox.warning(self, "No Port Selected", 
+                                "⚠ Please select a valid COM port first!")
+                return
+            
+            if not self.serial_thread or not self.serial_thread.isRunning():
+                QMessageBox.warning(self, "No Connection", 
+                                "⚠ No active serial connection!")
+                return
+            
+            self.update_at_result_display("[SIGNAL QUALITY] 🚀 Opening Signal Quality Checker...")
+            
+            if hasattr(self, 'display_manager'):
+                self.display_manager.set_signal_monitoring_active(True)
+            
+            quality_window = show_enhanced_sim_signal_quality_window(
+                port=port, 
+                baudrate=baudrate, 
+                parent=self, 
+                serial_thread=self.serial_thread
+            )
+            
+            if quality_window:
+                # เพิ่มใน dialog manager
+                if hasattr(self, 'dialog_manager'):
+                    self.dialog_manager.open_dialogs.append(quality_window)
+                
+                quality_window.finished.connect(
+                    lambda: self._on_signal_quality_window_closed()
+                )
+
+                self.update_at_result_display("[SIGNAL QUALITY] ✅ Signal Quality Checker opened!")
+                return quality_window
+            else:
+                self.update_at_result_display("[SIGNAL QUALITY] ❌ Failed to open Signal Quality Checker")
+                
+        except Exception as e:
+            self.update_at_result_display(f"[SIGNAL QUALITY] ❌ Error: {e}")
+
+    def _on_signal_quality_window_closed(self):
+        """เมื่อ Signal Quality window ปิด"""
+        if hasattr(self, 'display_manager'):
+            self.display_manager.set_signal_monitoring_active(False)
+        
+        self.update_at_result_display("[SIGNAL QUALITY] Signal Quality Checker closed - Enhanced Display Separation disabled")
+    
+    def create_enhanced_control_buttons(self, layout):
+        """สร้างปุ่มควบคุมต่างๆ พร้อม Signal Filter Toggle"""
+        layout.addSpacing(16)
+        
+        button_width = 120
+        
+        # ปุ่ม Signal Quality
+        self.btn_signal_quality = QPushButton("📶 Signal Quality")
+        self.btn_signal_quality.setFixedWidth(button_width + 20)
+        layout.addWidget(self.btn_signal_quality)
+        
+        # ⭐ ปุ่ม Toggle Signal Filter
+        self.btn_signal_filter = QPushButton("🔇 Filter: OFF")
+        self.btn_signal_filter.setCheckable(True)
+        self.btn_signal_filter.setFixedWidth(100)
+        self.btn_signal_filter.clicked.connect(self.toggle_signal_filter)
+        self.btn_signal_filter.setStyleSheet("""
+            QPushButton {
+                background-color: #6c757d;
+                color: white;
+                border: none;
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: bold;
+            }
+            QPushButton:checked {
+                background-color: #28a745;
+            }
+            QPushButton:hover {
+                background-color: #5a6268;
+            }
+            QPushButton:checked:hover {
+                background-color: #218838;
+            }
+        """)
+        layout.addWidget(self.btn_signal_filter)
+        
+        # ปุ่มอื่นๆ...
+        layout.addStretch()
+
+    def toggle_signal_filter(self, checked):
+        """Toggle การกรอง Signal Quality responses"""
+        if hasattr(self, 'display_manager') and hasattr(self.display_manager, 'filter_manager'):
+            self.display_manager.filter_manager.set_signal_monitoring(checked)
+            
+            if checked:
+                self.btn_signal_filter.setText("🔇 Filter: ON")
+                self.update_at_result_display("[FILTER] Signal monitoring filter enabled")
+            else:
+                self.btn_signal_filter.setText("🔇 Filter: OFF") 
+                self.update_at_result_display("[FILTER] Signal monitoring filter disabled")
+        else:
+            self.update_at_result_display("[FILTER] Display manager not available")
+
+    def on_signal_quality_window_closed(self):
+        """เมื่อ Signal Quality window ปิด - ปิดการกรอง"""
+        if hasattr(self, 'display_manager') and hasattr(self.display_manager, 'filter_manager'):
+            self.display_manager.filter_manager.set_signal_monitoring(False)
+        
+        self.update_at_result_display("[SIGNAL QUALITY] Signal Quality Checker closed - filtering disabled")
+
+    def test_signal_filtering(self):
+        """ทดสอบระบบกรองสัญญาณ"""
+        if not hasattr(self, 'display_manager'):
+            self.update_at_result_display("[TEST] Display manager not available")
+            return
+        
+        self.update_at_result_display("[TEST] Testing signal filtering system...")
+        
+        # ทดสอบ 1: เปิดการกรอง
+        self.display_manager.filter_manager.set_signal_monitoring(True)
+        self.update_at_result_display("[TEST] ✅ Signal monitoring filter enabled")
+        
+        # ทดสอบ 2: ทดสอบการกรอง background responses
+        test_responses = [
+            "+CSQ: 14,99",
+            "+CESQ: 99,99,255,255,15,44", 
+            "OK",
+            "Manual command response should show",
+            "+COPS: 0,0,\"AIS\""
+        ]
+        
+        for response in test_responses:
+            should_show = self.display_manager.filter_manager.should_show_in_manual_display(response)
+            status = "SHOW" if should_show else "HIDE"
+            self.update_at_result_display(f"[TEST] {response} → {status}")
+        
+        # ทดสอบ 3: ทดสอบ manual command
+        self.display_manager.register_manual_command("AT+CIMI")
+        should_show_cimi = self.display_manager.filter_manager.should_show_in_manual_display("+CIMI: 520010012345678")
+        should_show_ok = self.display_manager.filter_manager.should_show_in_manual_display("OK")
+        
+        self.update_at_result_display(f"[TEST] Manual CIMI response → {'SHOW' if should_show_cimi else 'HIDE'}")
+        self.update_at_result_display(f"[TEST] Manual OK response → {'SHOW' if should_show_ok else 'HIDE'}")
+        
+        self.update_at_result_display("[TEST] Signal filtering test completed")
+
+    def debug_display_filter_status(self):
+        """แสดงสถานะปัจจุบันของ display filter"""
+        if not hasattr(self, 'display_manager'):
+            self.update_at_result_display("[DEBUG] No display manager")
+            return
+            
+        filter_mgr = self.display_manager.filter_manager
+        
+        self.update_at_result_display("[DEBUG] === Display Filter Status ===")
+        self.update_at_result_display(f"[DEBUG] Signal monitoring: {filter_mgr.signal_monitoring_active}")
+        self.update_at_result_display(f"[DEBUG] Manual AT pending: {filter_mgr.manual_at_pending}")
+        self.update_at_result_display(f"[DEBUG] Last manual command: {filter_mgr.last_manual_command}")
+        self.update_at_result_display(f"[DEBUG] Background commands count: {len(filter_mgr.background_commands)}")
+        self.update_at_result_display("[DEBUG] === End Status ===")
+
+    def add_custom_filter_commands(self, commands_list):
+        """เพิ่มคำสั่งที่ต้องการกรองเพิ่มเติม"""
+        if hasattr(self, 'display_manager') and hasattr(self.display_manager, 'filter_manager'):
+            filter_mgr = self.display_manager.filter_manager
+            
+            for cmd in commands_list:
+                filter_mgr.background_commands.add(cmd.upper())
+                # เพิ่ม response pattern ด้วย
+                if cmd.startswith('AT+'):
+                    response_pattern = '+' + cmd[3:] + ':'
+                    filter_mgr.background_responses.add(response_pattern)
+            
+            self.update_at_result_display(f"[FILTER] Added {len(commands_list)} custom filter commands")
+        else:
+            self.update_at_result_display("[FILTER] Cannot add custom commands - filter manager not available")
+
+    def test_signal_quality_button(self):
+        """ทดสอบการทำงานของปุ่ม Signal Quality"""
+        try:
+            print("🧪 Testing Signal Quality button...")
+            
+            # ตรวจสอบว่าปุ่มถูกสร้างแล้ว
+            if hasattr(self, 'btn_signal_quality'):
+                print("✅ Button exists")
+                print(f"✅ Button enabled: {self.btn_signal_quality.isEnabled()}")
+                print(f"✅ Button visible: {self.btn_signal_quality.isVisible()}")
+                
+                # จำลองการคลิก
+                self.btn_signal_quality.click()
+                print("✅ Button click simulated")
+            else:
+                print("❌ Button does not exist")
+                
+        except Exception as e:
+            print(f"❌ Test failed: {e}")
+
+# ใน sim_info_window.py - เพิ่มก่อน class SimInfoWindow
+class EnhancedDisplayFilterManager:
+    """จัดการการแยกการแสดงผลแบบ Enhanced"""
+    
+    def __init__(self, parent_window):
+        self.parent_window = parent_window
+        
+        # แยกประเภทการแสดงผล
+        self.display_targets = {
+            'MANUAL': 'main_display',      # หน้าหลัก
+            'SMS': 'sms_monitor',          # SMS Monitor
+            'SIGNAL_QUALITY': 'signal_display',  # Signal Quality Checker
+            'BACKGROUND': 'nowhere'        # ไม่แสดงเลย
+        }
+        
+        # Response patterns  
+        self.response_patterns = {
+            'SIGNAL_QUALITY': ['+CSQ:', '+CESQ:', '+COPS:', '+CREG:'],
+            'SMS': ['+CMTI:', '+CMT:', '+CMGR:', '+CMGL:', '+CMGS:', '+CMS ERROR:'],
+            'SIM_INFO': ['+CIMI:', '+CCID:', '+CNUM:']
+        }
+        
+        self.active_modes = {
+            'signal_monitoring': False,
+            'sms_monitoring': True,
+            'manual_commands': True
+        }
+        
+        print("✅ EnhancedDisplayFilterManager initialized")
+    
+    def process_response(self, data_line, source_hint=None):
+        """ประมวลผล response และส่งไปยังปลายทางที่เหมาะสม"""
+        data = (data_line or "").strip()
+        if not data:
+            return
+        
+        # กำหนดประเภท response
+        response_type = self._classify_response(data, source_hint)
+        
+        # ส่งไปยังปลายทางที่เหมาะสม
+        if response_type == 'MANUAL':
+            self._send_to_main_display(data)
+        elif response_type == 'SMS':
+            self._send_to_sms_monitor(data)
+        elif response_type == 'SIGNAL_QUALITY':
+            # ไม่ต้องส่งไปไหน เพราะ Signal Quality จัดการเอง
+            print(f"🔇 Signal Quality response filtered: {data[:50]}")
+            pass
+        elif response_type == 'BACKGROUND':
+            # ไม่แสดงเลย
+            print(f"🔇 Background response filtered: {data[:50]}")
+            pass
+    
+    def _classify_response(self, data, source_hint=None):
+        """จำแนกประเภท response"""
+        data_upper = data.upper()
+        
+        # ใช้ source hint ถ้ามี
+        if source_hint:
+            return source_hint
+        
+        # ตรวจสอบ SMS responses
+        if any(pattern in data_upper for pattern in self.response_patterns['SMS']):
+            return 'SMS'
+        
+        # ตรวจสอบ Signal Quality responses
+        if any(pattern in data_upper for pattern in self.response_patterns['SIGNAL_QUALITY']):
+            if self.active_modes['signal_monitoring']:
+                return 'SIGNAL_QUALITY'
+            else:
+                return 'MANUAL'  # ถ้าไม่ได้เปิด signal monitoring ให้แสดงในหน้าหลัก
+        
+        # ตรวจสอบ OK/ERROR ที่ตามหลัง Signal Quality commands
+        if data_upper in ['OK', 'ERROR'] and self.active_modes['signal_monitoring']:
+            return 'SIGNAL_QUALITY'
+        
+        # Default เป็น Manual
+        return 'MANUAL'
+    
+    def _send_to_main_display(self, data):
+        """ส่งไปแสดงในหน้าหลัก"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        formatted_data = f"[{timestamp}] {data}"
+        self.parent_window.update_at_result_display(formatted_data)
+    
+    def _send_to_sms_monitor(self, data):
+        """ส่งไป SMS Monitor"""
+        if hasattr(self.parent_window, 'at_monitor_signal'):
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            formatted_data = f"[{timestamp}] {data}"
+            self.parent_window.at_monitor_signal.emit(formatted_data)
+    
+    def set_signal_monitoring_active(self, active):
+        """เปิด/ปิด signal monitoring mode"""
+        self.active_modes['signal_monitoring'] = active
+        status = "ON" if active else "OFF"
+        print(f"🎯 Signal monitoring mode: {status}")
+
+class DisplayFilterManager:
+    """จัดการการกรองการแสดงผล - ไม่กระทบ SMS processing"""
+    
+    def __init__(self, parent_window):
+        self.parent_window = parent_window
+        self.manual_at_pending = False  # รอ response จาก manual command
+        self.last_manual_command = None
+        self.manual_command_timestamp = None
+
+        # บันทึก command ที่ user ส่งเอง
+        self.user_commands = set()
+
+        # ติดตาม background/monitoring commands
+        self.background_commands = {
+            'AT+CESQ', 'AT+COPS', 'AT+CREG', 'AT+CIMI',
+            'AT+CNUM',
+        }
+
+        # ติดตาม responses ที่ไม่ต้องการแสดง (prefix ของบรรทัดผลลัพธ์)
+        self.background_responses = {
+            '+CSQ:', '+CESQ:', '+COPS:', '+CREG:', '+CIMI:',
+            '+CCID:', '+CNUM:', '+CPIN:', '+CGMI:', '+CGMM:',
+            '+CGMR:', '+CGSN:',
+        }
+
+        self.background_command_echos = {
+            'AT+CSQ', 'AT+CESQ', 'AT+COPS?', 'AT+CREG?'
+        }
+
+        # ใช้จำว่าเพิ่งซ่อนบรรทัดจาก monitor → เพื่อซ่อน OK/ERROR ถัดมา
+        self._suppress_next_ok = False
+
+        # อนุญาตให้ส่งไปแสดงที่ SMS Monitor เฉพาะ “เหตุการณ์ SMS” เท่านั้น
+        self.sms_only_prefixes = {
+            '+CMTI:',   # มี SMS ใหม่
+            '+CMT:',    # ข้อความส่งถึงเครื่อง (deliver)
+            '+CMGR:',   # อ่านจากกล่อง
+            '+CMGL:',   # list กล่อง
+            '+CMGS:',   # ส่งสำเร็จ
+            '+CMSS:',   # ส่งจาก storage
+            '+CMS ERROR:',
+        }
+
+        # ติดตามสถานะ Signal Quality monitoring
+        self.signal_monitoring_active = False
+        
+    def register_manual_command(self, command):
+        """บันทึกว่า user ส่งคำสั่ง manual"""
+        self.manual_at_pending = True
+        self.last_manual_command = command.upper()
+        self.manual_command_timestamp = datetime.now()
+        self.user_commands.add(command.upper())
+        
+        print(f"[DISPLAY FILTER] Manual command registered: {command}")
+    
+    def set_signal_monitoring(self, active: bool):
+        """ตั้งค่าสถานะการ monitoring สัญญาณ"""
+        self.signal_monitoring_active = active
+        if active:
+            print("[DISPLAY FILTER] Signal monitoring mode: ON")
+        else:
+            print("[DISPLAY FILTER] Signal monitoring mode: OFF")
+    
+    def should_show_in_manual_display(self, data):
+        data_clean = (data or "").strip()
+        upper = data_clean.upper()
+
+        # 1) ถ้าเป็นคำสั่งที่ผู้ใช้กดเอง → แสดงทุกบรรทัดจนจบ (OK/ERROR)
+        if self.manual_at_pending:
+            if self._is_end_response(data_clean):
+                self.manual_at_pending = False
+            return True
+
+        # 2) ระหว่าง monitoring สัญญาณ → ซ่อนทุกอย่างของฝั่ง monitor
+        if self.signal_monitoring_active:
+            # 2.1 ซ่อน echo ของคำสั่ง monitoring
+            if upper in self.background_command_echos:
+                self._suppress_next_ok = True
+                return False
+
+            # 2.2 ซ่อน response กลุ่มสัญญาณ/เครือข่าย
+            if any(resp in data_clean for resp in self.background_responses):
+                self._suppress_next_ok = True
+                return False
+
+            # 2.3 ซ่อน OK/ERROR ต่อจากสิ่งที่ซ่อน
+            if upper in ['OK', 'ERROR'] and self._suppress_next_ok:
+                self._suppress_next_ok = False
+                return False
+
+        # 3) กรณีไม่ใช่ manual → ไม่โชว์ในหน้าหลัก
+        return False
+
+    def should_show_in_monitor(self, data):
+        data_clean = (data or "").strip()
+
+        # ไม่ส่งซ้ำสิ่งที่ผู้ใช้กดเอง (manual) ไป SMS Monitor
+        if self.manual_at_pending:
+            return False
+
+        # ให้ผ่านเฉพาะข้อความบ่งชี้เหตุการณ์ SMS เท่านั้น
+        if any(data_clean.startswith(p) for p in self.sms_only_prefixes):
+            return True
+
+        # นอกนั้น (รวมทั้ง CSQ/CESQ/COPS/CREG, echo, OK/ERROR) ไม่ต้องส่งเข้า SMS Monitor
+        return False
+    
+    def _is_end_response(self, data):
+        """ตรวจสอบว่าเป็น response ท้ายสุด"""
+        end_indicators = ['OK', 'ERROR', '+CME ERROR:', '+CMS ERROR:']
+        return any(data.startswith(indicator) for indicator in end_indicators)
+    
+    def _is_background_response(self, data):
+        """ตรวจสอบว่าเป็น response จาก background monitoring"""
+        return any(resp in data for resp in self.background_responses)
+    
+    def _is_manual_response(self, data):
+        """ตรวจสอบ response ที่เป็น Manual แน่นอน"""
+        # Response ที่มักจะเป็น Manual command
+        manual_responses = [
+            '+CPIN:', '+CSQ:', '+COPS:', '+CCID:', '+CIMI:', '+CNUM:',
+            '+CMGL:', '+CMGR:', '+CGMI:', '+CGMM:', '+CGMR:', '+CGSN:',
+            'OK', 'ERROR', '+CME ERROR:', '+CMS ERROR:', '>'
+        ]
+        
+        return any(data.startswith(resp) for resp in manual_responses)
+
+class EnhancedResponseDisplayManager:
+    """จัดการการแสดงผลแบบแยก - ไม่กระทบ SMS"""
+    
+    def __init__(self, parent_window):
+        self.parent_window = parent_window
+        self.filter_manager = DisplayFilterManager(parent_window)
+        self._recent = deque(maxlen=50)    # (text, t)
+        self._dedup_window = 1.2           # วินาที
+
+        self.signal_monitoring_active = False
+    
+    def set_signal_monitoring_active(self, active):
+        """เปิด/ปิด signal monitoring mode"""
+        self.signal_monitoring_active = active
+        
+        # อัพเดท filter manager ด้วย
+        if hasattr(self.filter_manager, 'set_signal_monitoring'):
+            self.filter_manager.set_signal_monitoring(active)
+        
+        status = "ON" if active else "OFF"
+        print(f"🎯 Signal monitoring mode: {status}")
+    
+        
+    def process_response(self, data_line):
+        """ประมวลผล response แล้วส่งไปแสดงผลที่ถูกต้อง (พร้อม de-dup)"""
+        try:
+            data = (data_line or "").strip()
+            if not data:
+                return
+
+            # de-dup: ข้ามถ้าบรรทัดเดียวกันเพิ่งแสดงไปในช่วงสั้น ๆ
+            now = monotonic()
+            for txt, t in list(self._recent):
+                if data == txt and (now - t) <= self._dedup_window:
+                    return
+            self._recent.append((data, now))
+
+            # ตัดสินใจการแสดงผล
+            show_in_manual  = self.filter_manager.should_show_in_manual_display(data)
+            show_in_monitor = self.filter_manager.should_show_in_monitor(data)
+
+            if show_in_manual:
+                self._display_in_manual(data)
+
+            if show_in_monitor:
+                self._display_in_monitor(data)
+
+        except Exception as e:
+            print(f"Error in response processing: {e}")
+            self._display_in_manual(f"[ERROR] {data_line}")
+    
+    def _display_in_manual(self, data):
+        """แสดงใน Manual Response (หน้าหลัก)"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        formatted_data = f"[{timestamp}] {data}"
+        self.parent_window.update_at_result_display(formatted_data)
+        print(f"[MANUAL DISPLAY] {data}")
+    
+    def _display_in_monitor(self, data):
+        """แสดงใน SMS Monitor"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        formatted_data = f"[{timestamp}] {data}"
+        
+        # ส่งไป SMS Monitor ถ้ามี
+        if hasattr(self.parent_window, 'at_monitor_signal'):
+            self.parent_window.at_monitor_signal.emit(formatted_data)
+        
+        print(f"[MONITOR DISPLAY] {data}")
+    
+    def register_manual_command(self, command):
+        """บันทึก manual command ที่ user ส่ง"""
+        self.filter_manager.register_manual_command(command)
+
+# ===== 2. ปรับปรุง SimInfoWindow class =====
+
+# เพิ่มในส่วน __init__ ของ SimInfoWindow
+def init_display_separation(self):
+    """เริ่มต้นระบบแยกการแสดงผล"""
+    # เพิ่ม Display Manager
+    self.display_manager = EnhancedResponseDisplayManager(self)
+    self.display_separation_active = True  # เริ่มต้นเปิดใช้งาน
+    
+    print("✅ Display separation initialized")
+
+# เพิ่มในส่วน setup_serial_monitor ของ SimInfoWindow
+def setup_serial_monitor_with_separation(self):
+    """ตั้งค่า Serial Monitor พร้อมระบบแยกการแสดงผล"""
+    port = self.port_combo.currentData()
+    baudrate = int(self.baud_combo.currentText())
+
+    self.serial_thread = self.serial_connection_manager.setup_serial_monitor(port, baudrate)
+
+    if self.serial_thread:
+        # 🔴 1) ตัดการเชื่อมต่อเดิมที่ส่งเข้า Response ตรง ๆ
+        try:
+            self.serial_thread.at_response_signal.disconnect(self.update_at_result_display)
+        except Exception:
+            # ถ้าเชื่อมด้วย slot อื่นไว้ (เช่น lambda ภายใน SerialConnectionManager)
+            # จะ disconnect แบบระบุ slot ไม่ได้ ก็ปล่อยผ่านได้
+            pass
+
+        # 🟢 2) ต่อใหม่เข้าตัวกรองเท่านั้น
+        self.serial_thread.at_response_signal.connect(self.on_filtered_response)
+
+        self._cmt_buffer = None
+        self._is_sending_sms = False
+        self.auto_open_sms_monitor()
+
+def on_filtered_response(self, response):
+    """ประมวลผล response ผ่าน Display Manager"""
+    if hasattr(self, 'display_separation_active') and self.display_separation_active:
+        self.display_manager.process_response(response)
+    else:
+        # แสดงแบบเดิม
+        self.update_at_result_display(response)
+
+# ปรับปรุง send_at_command_main
+def send_at_command_main_with_separation(self):
+    """ส่ง AT command พร้อมบันทึก manual command"""
+    # ตรวจสอบการเชื่อมต่อ serial
+    if not hasattr(self, 'serial_thread') or not self.serial_thread:
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self, 
+            "No Connection", 
+            "❌ No serial connection found!\n\n"
+            "Please:\n"
+            "1. Select correct USB Port\n"
+            "2. Click 'Refresh Ports'\n"
+            "3. Make sure the modem is connected"
+        )
+        return
+    
+    # ตรวจสอบว่า thread ยังทำงานอยู่
+    if not self.serial_thread.isRunning():
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self, 
+            "Connection Lost", 
+            "❌ Serial connection is not active!\n\n"
+            "Please click 'Refresh Ports' to reconnect."
+        )
+        return
+    
+    # ดึงคำสั่ง AT
+    cmd = self.at_combo_main.currentText().strip()
+    if not cmd:
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.warning(self, "Empty Command", "📵 Please enter an AT command")
+        return
+    
+    # 🔥 บันทึกว่าเป็น manual command
+    if hasattr(self, 'display_manager'):
+        self.display_manager.register_manual_command(cmd)
+    
+    # ตรวจจับคำสั่งพิเศษ
+    if cmd.upper() == "AT+RUN":
+        self.special_command_handler.handle_at_run_command()
+        self.update_at_command_display(cmd)
+        return
+    elif cmd.upper() == "AT+STOP":
+        self.special_command_handler.handle_at_stop_command()
+        self.update_at_command_display(cmd)
+        return
+    elif cmd.upper() == "AT+CLEAR":
+        self.special_command_handler.handle_at_clear_command()
+        self.update_at_command_display(cmd)
+        return
+    
+    # ล้างหน้าจอผลลัพธ์
+    self.clear_at_displays()
+    
+    # เพิ่มคำสั่งลงประวัติ
+    self.at_command_manager.add_command_to_history(self.at_combo_main, cmd)
+    
+    # แสดงคำสั่งที่ส่ง
+    self.update_at_command_display(cmd)
+    
+    # ส่งคำสั่งผ่าน serial thread
+    try:
+        success = self.serial_thread.send_command(cmd)
+        if not success:
+            self.update_at_result_display("[ERROR] ❌ Failed to send command - serial connection issue")
+    except Exception as e:
+        self.update_at_result_display(f"[ERROR] ❌ Exception while sending command: {e}")
+
+# ปรับปรุง send_sms_main
+def send_sms_main_with_separation(self):
+    """ส่ง SMS พร้อมบันทึก SMS command"""
+    phone_number = self.input_phone_main.text().strip()
+    message = self.input_sms_main.toPlainText().strip()
+    
+    # ตรวจสอบข้อมูลที่ป้อน
+    if not phone_number:
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.warning(self, "Missing Phone Number", "📵 Please enter a phone number")
+        self.input_phone_main.setFocus()
+        return
+        
+    if not message:
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.warning(self, "Missing Message", "📵 Please enter a message to send")
+        self.input_sms_main.setFocus()
+        return
+    
+    # 🔥 บันทึกว่าจะมี SMS command
+    if hasattr(self, 'display_manager'):
+        self.display_manager.register_manual_command(f'AT+CMGS="{phone_number}"')
+    
+    # เรียก SMS handler เดิม
+    if hasattr(self, 'sms_handler'):
+        try:
+            success = self.sms_handler.send_sms_main(phone_number, message)
+            if success:
+                self.update_at_result_display(f"[SMS] ✅ SMS sent successfully to {phone_number}")
+                
+                # ล้างฟอร์มหลังส่งสำเร็จ
+                self.input_phone_main.clear()
+                self.input_sms_main.clear()
+                    
+        except Exception as e:
+            self.update_at_result_display(f"[SMS ERROR] ❌ Exception while sending SMS: {e}")
+    else:
+        self.update_at_result_display("[SMS ERROR] ❌ SMS handler not available")
+
+# ===== 3. เพิ่ม Display Stats Widget =====
+
+def toggle_display_separation(self, checked):
+    """เปิด/ปิด การแยกการแสดงผล"""
+    self.display_separation_active = checked
+    
+    if checked:
+        self.btn_toggle_separation.setText("🎯 ON")
+        self.btn_toggle_separation.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: bold;
+            }
+        """)
+        print("✅ Display separation enabled")
+    else:
+        self.btn_toggle_separation.setText("🎯 OFF")  
+        self.btn_toggle_separation.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: bold;
+            }
+        """)
+        print("❌ Display separation disabled")
+
+# ===== 4. Integration Functions =====
+
+def integrate_display_separation_into_sim_info_window():
+    """ฟังก์ชันสำหรับรวม Display Separation เข้ากับ SimInfoWindow ที่มีอยู่"""
+    
+    # เพิ่มเมธอดใหม่เข้าไปใน SimInfoWindow class
+    def patch_sim_info_window():
+        # เพิ่มเมธอดลงใน SimInfoWindow
+        SimInfoWindow.init_display_separation = init_display_separation
+        SimInfoWindow.on_filtered_response = on_filtered_response
+        SimInfoWindow.toggle_display_separation = toggle_display_separation
+        
+        # เก็บ original methods
+        SimInfoWindow._original_setup_serial_monitor = SimInfoWindow.setup_serial_monitor
+        SimInfoWindow._original_send_at_command_main = SimInfoWindow.send_at_command_main
+        SimInfoWindow._original_send_sms_main = SimInfoWindow.send_sms_main
+        
+        # แทนที่ methods
+        SimInfoWindow.setup_serial_monitor = setup_serial_monitor_with_separation
+        SimInfoWindow.send_at_command_main = send_at_command_main_with_separation
+        SimInfoWindow.send_sms_main = send_sms_main_with_separation
+        
+        print("✅ SimInfoWindow patched with Display Separation!")
+    
+    return patch_sim_info_window
+
+# ===== 5. Auto Integration =====
+
+def auto_integrate_display_separation():
+    """อัตโนมัติรวม Display Separation เข้าไปใน SimInfoWindow ที่มีอยู่"""
+    patch_function = integrate_display_separation_into_sim_info_window()
+    patch_function()
+    
+    # Hook เข้าไปใน __init__ ของ SimInfoWindow
+    original_init = SimInfoWindow.__init__
+    
+    def enhanced_init(self, *args, **kwargs):
+        # เรียก __init__ เดิม
+        original_init(self, *args, **kwargs)
+        
+        # เพิ่ม Display Separation
+        self.init_display_separation()
+    
+    SimInfoWindow.__init__ = enhanced_init
+    print("✅ Auto integration completed!")
+
+# ===== 6. Test Function =====
+
+def test_integration():
+    """ทดสอบการรวม Display Separation"""
+    print("=== Testing Display Separation Integration ===")
+    
+    try:
+        # เรียกใช้ auto integration
+        auto_integrate_display_separation()
+        print("✅ Integration successful!")
+        
+        # ทดสอบสร้าง instance
+        # window = SimInfoWindow()  # จะมี Display Separation แล้ว
+        # print("✅ Window creation successful!")
+        
+    except Exception as e:
+        print(f"❌ Integration failed: {e}")
+
+# === Activate Display Separation patch ===
+auto_integrate_display_separation()
