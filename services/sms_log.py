@@ -140,38 +140,76 @@ def log_sms_sent(phone: str,message: str,status: str = "ส่งสำเร็
             return False
 
 def log_sms_inbox(sender: str, message: str, status: str = "รับเข้า (real-time)", log_file: str = None):
-    """บันทึก SMS inbox - ใช้วันที่ปัจจุบันจาก timezone เอเชีย"""
+    """บันทึก SMS inbox - Fixed logging with better error handling"""
     if log_file is None:
         log_file = get_log_file_path("sms_inbox_log.csv")
 
-    ensure_dir_for_file(log_file)
+    try:
+        ensure_dir_for_file(log_file)
+    except Exception as e:
+        print(f"❌ Error creating directory: {e}")
+        return False
 
-    # ✅ ใช้เวลาจาก timezone เอเชีย
-    tz = pytz.timezone("Asia/Bangkok")
-    now = datetime.now(tz)
-    date_str = now.strftime("%d/%m/%Y")
-    time_str = now.strftime("%H:%M:%S")
-    timestamp = f"{date_str},{time_str}+07"
+    # ใช้เวลาจาก timezone เอเชีย
+    try:
+        import pytz
+        tz = pytz.timezone("Asia/Bangkok")
+        now = datetime.now(tz)
+        date_str = now.strftime("%d/%m/%Y")
+        time_str = now.strftime("%H:%M:%S")
+        timestamp = f"{date_str},{time_str}+07"
+    except:
+        # Fallback ถ้า pytz ไม่มี
+        now = datetime.now()
+        date_str = now.strftime("%d/%m/%Y")
+        time_str = now.strftime("%H:%M:%S")
+        timestamp = f"{date_str},{time_str}+07"
 
-    print(f"🔍 DEBUG log_sms_inbox: Using timestamp = {timestamp}")
+    print(f"🔍 DEBUG log_sms_inbox: Timestamp = {timestamp}")
+    print(f"🔍 DEBUG log_sms_inbox: File path = {log_file}")
+    print(f"🔍 DEBUG log_sms_inbox: Sender = {sender}")
+    print(f"🔍 DEBUG log_sms_inbox: Message = {message}")
 
-    if sender:
-        # เก็บเบอร์จริงโดยตรง ไม่ผ่าน normalize
-        sender = sender.strip()
-    else:
+    if not sender:
         print("❌ Sender is None or empty")
         return False
 
     try:
+        sender = sender.strip()
         is_new = not os.path.isfile(log_file) or os.path.getsize(log_file) == 0
+        
+        # ลองเขียนไฟล์
         with open(log_file, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if is_new:
                 writer.writerow(["Received_Time", "Sender", "Message", "Status"])
             writer.writerow([f'"{timestamp}"', sender, f'"{message}"', f'"{status}"'])
+        
         print(f"✅ [Log Saved] SMS from {sender} recorded with current date: {date_str}")
         return True
 
+    except PermissionError as e:
+        print(f"❌ Permission error saving SMS inbox log: {e}")
+        
+        # ลองบันทึกใน local backup
+        try:
+            local_file = os.path.join("./log_backup", "sms_inbox_log.csv")
+            ensure_dir_for_file(local_file)
+            
+            is_new = not os.path.isfile(local_file) or os.path.getsize(local_file) == 0
+            with open(local_file, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                if is_new:
+                    writer.writerow(["Received_Time", "Sender", "Message", "Status"])
+                writer.writerow([f'"{timestamp}"', sender, f'"{message}"', f'"{status}"'])
+            
+            print(f"✅ SMS saved to local backup: {local_file}")
+            return True
+            
+        except Exception as backup_error:
+            print(f"❌ Failed to save to local backup: {backup_error}")
+            return False
+            
     except Exception as e:
         print(f"❌ Error saving SMS inbox log: {e}")
         return False

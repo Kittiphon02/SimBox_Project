@@ -20,6 +20,7 @@ from styles import MainWindowStyles
 from windows.at_command_helper import ATCommandHelper
 from services.sms_log import log_sms_sent
 from widgets.sms_log_dialog import SmsLogDialog
+# from windows.sim_signal_quality_window import show_sim_signal_quality_window
 from windows.enhanced_sim_signal_quality_window import show_enhanced_sim_signal_quality_window
 from managers.smart_command_manager import SmartCommandManager
 from datetime import datetime
@@ -42,11 +43,6 @@ class SimInfoWindow(QMainWindow):
         self.init_variables()
         self.init_managers()
         
-        # เพิ่มตัวแปรเพื่อติดตามสถานะ dialog
-        self._active_dialogs = set()
-        self._is_showing_dialog = False
-        self._current_dialog = None
-
         # โหลดการตั้งค่าและสร้าง UI
         self.load_application_settings()
         self.setup_window()
@@ -60,38 +56,6 @@ class SimInfoWindow(QMainWindow):
         # self.setup_enhanced_display_separation()
         self.serial_thread.at_response_signal.connect(self.update_at_result_display)
         self.serial_thread.new_sms_signal.connect(self.sms_handler.process_new_sms_signal)
-
-    def show_single_warning(self, title, message):
-        """แสดง warning dialog แบบไม่ซ้อนทับ"""
-        
-        # หากกำลังแสดง dialog อยู่ ให้หยุดการทำงาน
-        if self._is_showing_dialog:
-            return False
-            
-        # หากมี dialog เดิมอยู่ ให้ปิดก่อน
-        if self._current_dialog:
-            self._current_dialog.close()
-            
-        self._is_showing_dialog = True
-        
-        try:
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle(title)
-            msg_box.setText(message)
-            msg_box.setIcon(QMessageBox.Warning)
-            msg_box.setWindowModality(Qt.ApplicationModal)
-            
-            # เก็บ reference ไว้
-            self._current_dialog = msg_box
-            
-            # แสดง dialog แบบ blocking
-            result = msg_box.exec_()
-            return True
-            
-        finally:
-            # รีเซ็ตสถานะเมื่อปิด dialog
-            self._is_showing_dialog = False
-            self._current_dialog = None
 
     def setup_enhanced_display_separation(self):
         """ตั้งค่าระบบแยกการแสดงผลแบบ Enhanced"""
@@ -785,71 +749,75 @@ class SimInfoWindow(QMainWindow):
         self.table.setStyleSheet(MainWindowStyles.get_table_style())
     
     def setup_connections(self):
-        """เชื่อมต่อ signals และ slots - Clean version"""
-
-        # ✅ Refresh ports
+        """เชื่อมต่อ signals และ slots - Updated version"""
+        # Port management
         self.btn_refresh.clicked.connect(self.refresh_ports)
-
-        # ✅ Dialogs
+        
+        # Dialog management
         self.btn_smslog.clicked.connect(self.dialog_manager.show_sms_log_dialog)
         self.btn_realtime_monitor.clicked.connect(self.open_realtime_monitor)
+        
+        # Signal Quality - ต้องเชื่อมต่อ
+        self.btn_signal_quality.clicked.connect(self.show_signal_quality_checker)
+        
+        # AT Command management
+        self.btn_send_at.clicked.connect(self.send_at_command_main)
+        self.btn_del_cmd.clicked.connect(self.remove_at_command_main)
+        self.btn_help.clicked.connect(self.show_at_command_helper)
+        
+        # SMS management
+        self.btn_send_sms_main.clicked.connect(self.send_sms_main)
+        self.btn_show_sms.clicked.connect(self.sms_inbox_manager.show_inbox_sms)
+        self.btn_clear_sms_main.clicked.connect(self.sms_inbox_manager.clear_all_sms)
+    
+        # ⭐ เพิ่มการเชื่อมต่อปุ่ม SMS ที่ส่งไม่สำเร็จ
         if hasattr(self, 'btn_failed_sms'):
             self.btn_failed_sms.clicked.connect(self.show_failed_sms_dialog)
-
-        # ✅ Signal Quality
-        self.btn_signal_quality.clicked.connect(self.show_signal_quality_checker)
-
-        # ✅ AT Command (disconnect กันซ้ำก่อน)
-        for btn, slot in [
-            (self.btn_send_at, self.send_at_command_main),
-            (self.btn_del_cmd, self.remove_at_command_main),
-            (self.btn_help, self.show_at_command_helper),
-        ]:
-            try:
-                btn.clicked.disconnect()
-            except Exception:
-                pass
-            btn.clicked.connect(slot)
-
-        # ✅ SMS Management
-        for btn, slot in [
-            (self.btn_send_sms_main, self.send_sms_main),
-            (self.btn_show_sms, self.sms_inbox_manager.show_inbox_sms),
-            (self.btn_clear_sms_main, self.sms_inbox_manager.clear_all_sms),
-        ]:
-            try:
-                btn.clicked.disconnect()
-            except Exception:
-                pass
-            btn.clicked.connect(slot)
-
-        # ✅ Enter key binding (AT command)
+        
+        # AT Command management
+        self.btn_send_at.clicked.connect(self.send_at_command_main)
+        self.btn_del_cmd.clicked.connect(self.remove_at_command_main)
+        self.btn_help.clicked.connect(self.show_at_command_helper)
+        
+        # SMS management - ใช้เมธอดที่อัพเดทแล้ว
+        self.btn_send_sms_main.clicked.connect(self.send_sms_main)
+        self.btn_show_sms.clicked.connect(self.sms_inbox_manager.show_inbox_sms)
+        self.btn_clear_sms_main.clicked.connect(self.sms_inbox_manager.clear_all_sms)
+        
+        # แก้ไข Enter key connections - ใช้วิธีที่ปลอดภัยกว่า
         try:
+            # สำหรับ AT Command ComboBox
             if hasattr(self.at_combo_main, 'lineEdit'):
                 line_edit = self.at_combo_main.lineEdit()
                 if line_edit:
                     line_edit.returnPressed.connect(self.send_at_command_main)
+                    print("✅ AT Command Enter key connected successfully")
             else:
+                # วิธีสำรอง - ใช้ QComboBox signal
                 self.at_combo_main.editTextChanged.connect(self._handle_at_combo_change)
+                print("✅ AT Command fallback connection established")
+                    
         except Exception as e:
             print(f"❌ AT Command Enter key connection failed: {e}")
+            # วิธีสำรองสุดท้าย - ใช้ key event
             self.at_combo_main.installEventFilter(self)
 
-        # ✅ Enter key binding (Phone input)
         try:
+            # สำหรับ Phone number input
             self.input_phone_main.returnPressed.connect(self.send_sms_main)
-        except Exception:
-            pass
-
-        # ✅ Ctrl+Enter binding (SMS input)
+            print("✅ Phone input Enter key connected successfully")
+        except Exception as e:
+            print(f"❌ Phone input Enter key connection failed: {e}")
+            
         try:
+            # สำหรับ SMS text input - ใช้ Ctrl+Enter
             from PyQt5.QtWidgets import QShortcut
             from PyQt5.QtGui import QKeySequence
             sms_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self.input_sms_main)
             sms_shortcut.activated.connect(self.send_sms_main)
-        except Exception:
-            pass
-
+            print("✅ SMS Ctrl+Enter shortcut connected successfully")
+        except Exception as e:
+            print(f"❌ SMS shortcut connection failed: {e}")
 
     def _handle_at_combo_change(self, text):
         """Handle AT combo text change for fallback Enter key support"""
@@ -1149,92 +1117,55 @@ class SimInfoWindow(QMainWindow):
 
     # ==================== 6. SMS HANDLING ====================
     def send_sms_main(self):
-        """ปรับปรุงการส่ง SMS ให้ไม่มี dialog ซ้อนทับ"""
-        
-        # ตรวจสอบว่ากำลังแสดง dialog อยู่หรือไม่
-        if self._is_showing_dialog:
-            return
-            
+        """ส่ง SMS จากหน้าหลัก - Updated version"""
         phone_number = self.input_phone_main.text().strip()
         message = self.input_sms_main.toPlainText().strip()
         
-        # รวม validation ทั้งหมดไว้ในที่เดียว
-        if not phone_number and not message:
-            self.show_single_warning(
-                "ข้อมูลไม่ครบถ้วน", 
-                "กรุณาใส่หมายเลขโทรศัพท์และข้อความที่ต้องการส่ง"
-            )
+        # ตรวจสอบข้อมูลที่ป้อน
+        if not phone_number:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Missing Phone Number", "📵 Please enter a phone number")
             self.input_phone_main.setFocus()
             return
-        elif not phone_number:
-            self.show_single_warning(
-                "ไม่มีหมายเลขโทรศัพท์", 
-                "กรุณาใส่หมายเลขโทรศัพท์ปลายทาง"
-            )
-            self.input_phone_main.setFocus()
-            return
-        elif not message:
-            self.show_single_warning(
-                "ไม่มีข้อความ", 
-                "กรุณาใส่ข้อความที่ต้องการส่ง"
-            )
+            
+        if not message:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Missing Message", "📵 Please enter a message to send")
             self.input_sms_main.setFocus()
             return
         
-        # ตรวจสอบการเชื่อมต่อ serial
-        if not hasattr(self, 'serial_thread') or not self.serial_thread:
-            self.show_single_warning(
-                "ไม่มีการเชื่อมต่อ", 
-                "ไม่พบการเชื่อมต่อ serial!\n\nกรุณา:\n1. เลือก USB Port ที่ถูกต้อง\n2. คลิก 'Refresh Ports'\n3. ตรวจสอบการเชื่อมต่อโมเด็ม"
-            )
-            return
-            
-        if not self.serial_thread.isRunning():
-            self.show_single_warning(
-                "การเชื่อมต่อขาดหาย", 
-                "การเชื่อมต่อ serial ไม่ทำงาน!\n\nกรุณาคลิก 'Refresh Ports' เพื่อเชื่อมต่อใหม่"
-            )
-            return
-
-        # ดำเนินการส่ง SMS
+        # ⭐ ใช้ SMS handler ที่ปรับปรุงแล้ว
         if hasattr(self, 'sms_handler'):
             try:
                 success = self.sms_handler.send_sms_main(phone_number, message)
                 if success:
-                    self.update_at_result_display(f"[SMS] ✅ ส่ง SMS ไปยัง {phone_number} สำเร็จ")
+                    # ⭐ ลบการบันทึก log ออก เพราะ sms_handler จะจัดการให้แล้ว
+                    # log_sms_sent(phone_number, message, "ส่งออก (real-time)")
+
+                    # ปล่อยสัญญาณให้ reload log
+                    if hasattr(self, 'sms_monitor_dialog') and self.sms_monitor_dialog:
+                        self.sms_monitor_dialog.log_updated.emit()
+
+                    # ถ้ามีหน้าต่าง SMS Log เปิดอยู่ ให้รีโหลดทันที
+                    mon = getattr(self, 'sms_monitor_dialog', None)
+                    if mon:
+                        mon.log_updated.emit()
+
+                    self.update_at_result_display(f"[SMS] ✅ SMS sent successfully to {phone_number}")
                     
                     # ล้างฟอร์มหลังส่งสำเร็จ
                     self.input_phone_main.clear()
                     self.input_sms_main.clear()
+                # ถ้า success = False จะจัดการใน sms_handler แล้ว
                     
             except Exception as e:
-                self.update_at_result_display(f"[SMS ERROR] ❌ เกิดข้อผิดพลาดในการส่ง SMS: {e}")
+                self.update_at_result_display(f"[SMS ERROR] ❌ Exception while sending SMS: {e}")
         else:
-            self.update_at_result_display("[SMS ERROR] ❌ SMS handler ไม่พร้อมใช้งาน")
+            self.update_at_result_display("[SMS ERROR] ❌ SMS handler not available")
 
     def show_loading_dialog(self):
-        """แสดง loading dialog โดยไม่แสดงข้อความ success อัตโนมัติ"""
-        # สร้าง loading widget แต่ตั้งค่าไม่ให้แสดง success message
-        if hasattr(self, 'loading_widget'):
-            # ตั้งค่าให้ loading widget ไม่แสดง "Successfully!" อัตโนมัติ
-            self._close_loading_widget_safely()
-    
-    def _close_loading_widget_safely(self):
-        """ปิด loading widget อย่างปลอดภัย"""
-        try:
-            if hasattr(self.parent, 'loading_widget') and self.parent.loading_widget:
-                if hasattr(self.parent.loading_widget, 'close'):
-                    self.parent.loading_widget.close()
-                elif hasattr(self.parent.loading_widget, 'hide'):
-                    self.parent.loading_widget.hide()
-                self.parent.loading_widget = None
-                
-            if hasattr(self.parent, 'loading_dialog') and self.parent.loading_dialog:
-                if hasattr(self.parent.loading_dialog, 'close'):
-                    self.parent.loading_dialog.close()
-                self.parent.loading_dialog = None
-        except Exception as e:
-            print(f"Warning: Could not close loading widget: {e}")
+        """แสดง Loading Dialog"""
+        self.dialog_manager.show_loading_dialog()
 
     # เพิ่มเมธอดใหม่สำหรับแสดงรายการ SMS ที่ส่งไม่สำเร็จ
     def show_failed_sms_dialog(self):
@@ -1458,14 +1389,6 @@ class SimInfoWindow(QMainWindow):
     def closeEvent(self, event):
         """จัดการเมื่อปิดหน้าต่างหลัก"""
         try:
-            # ปิด dialog ที่เปิดอยู่
-            if self._current_dialog:
-                self._current_dialog.close()
-                
-            # รีเซ็ตสถานะ
-            self._is_showing_dialog = False
-            self._active_dialogs.clear()
-
             # บันทึกการตั้งค่า
             geometry = self.geometry()
             self.settings_manager.update_window_geometry(
@@ -1487,14 +1410,6 @@ class SimInfoWindow(QMainWindow):
             print(f"Error during close: {e}")
         
         event.accept()
-
-    def show_connection_warning(self):
-        """แสดงคำเตือนการเชื่อมต่อแบบไม่ซ้อนทับ"""
-        if not self._is_showing_dialog:
-            self.show_single_warning(
-                "ตรวจสอบการเชื่อมต่อ", 
-                "กรุณาตรวจสอบ:\n• USB Port ถูกต้อง\n• โมเด็มเชื่อมต่อแล้ว\n• Baudrate ถูกต้อง"
-            )
 
     def show_signal_quality_checker(self):
         """เปิดหน้าต่าง Enhanced Signal Quality Checker - Enhanced version"""

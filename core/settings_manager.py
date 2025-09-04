@@ -17,7 +17,7 @@ class SettingsManager:
             'auto_sms_monitor': True,
             'last_port': '',
             'last_baudrate': '115200',
-            'log_dir': './log',
+            'log_dir': '\\\\KITTIPHON\\Simbox-log',
             'window_geometry': {
                 'x': 100,
                 'y': 100,
@@ -32,7 +32,6 @@ class SettingsManager:
     
     def load_settings(self):
         """โหลดการตั้งค่าจากไฟล์
-        
         Returns:
             dict: การตั้งค่าที่โหลด
         """

@@ -21,58 +21,16 @@ class SMSHandler:
         self.parent = parent
         self._cmt_buffer = None
         self._notified_sms = set()  # เซ็ตเก็บ SMS ที่แจ้งเตือนไปแล้ว
-        self._handling_error = False
 
         # เชื่อมต่อกับ serial thread เมื่อ parent มี serial_thread
         if hasattr(parent, 'serial_thread') and parent.serial_thread:
             parent.serial_thread.new_sms_signal.connect(self.process_new_sms_signal)
 
-    def _update_status(self, status_text):
-        """อัปเดทสถานะใน loading widget - METHOD ที่หายไป"""
-        try:
-            if hasattr(self.parent, 'loading_widget') and self.parent.loading_widget:
-                self.parent.loading_widget.update_status(status_text)
-            else:
-                # ถ้าไม่มี loading_widget ให้แสดงใน AT result display
-                if hasattr(self.parent, 'update_at_result_display'):
-                    self.parent.update_at_result_display(f"[SMS STATUS] {status_text}")
-                else:
-                    print(f"SMS Status: {status_text}")
-        except Exception as e:
-            print(f"Error updating SMS status: {e}")
-
     # ===== helpers for display routing =====
     def _resp(self, text: str):
-        """แสดงผลใน AT result display"""
+        # โชว์ที่ Response (สรุปสำคัญ)
         if hasattr(self.parent, 'update_at_result_display'):
             self.parent.update_at_result_display(text)
-        else:
-            print(text)
-    
-    def _check_serial_availability(self):
-        """ตรวจสอบว่า serial port ว่างให้ส่ง SMS หรือไม่"""
-        try:
-            if hasattr(self.parent, 'signal_quality_thread'):
-                signal_thread = self.parent.signal_quality_thread
-                # ถ้า signal quality thread กำลังทำงาน ให้หยุดชั่วคราว
-                if hasattr(signal_thread, 'pause_monitoring'):
-                    signal_thread.pause_monitoring()
-                    time.sleep(0.5)
-                    return True
-            return True
-        except Exception as e:
-            self._resp(f"[SMS WARNING] Serial availability check: {e}")
-            return True  # ให้ลองต่อไป
-    
-    def _resume_other_threads(self):
-        """เปิดการทำงานของ threads อื่นหลังส่ง SMS เสร็จ"""
-        try:
-            if hasattr(self.parent, 'signal_quality_thread'):
-                signal_thread = self.parent.signal_quality_thread
-                if hasattr(signal_thread, 'resume_monitoring'):
-                    signal_thread.resume_monitoring()
-        except Exception as e:
-            self._resp(f"[SMS WARNING] Resume threads: {e}")
 
     def _mon(self, text: str):
         # โชว์ที่ SMS Monitor (log ละเอียดยาว)
@@ -161,550 +119,52 @@ class SMSHandler:
         except Exception as e:
             return {'ready': False, 'error': f'ไม่สามารถตรวจสอบสถานะ SIM ได้: {str(e)}'}
     
-    # def _send_sms_process(self, phone_number, message):
-    #     """กระบวนการส่ง SMS แบบง่าย - แก้ไขเพื่อลดปัญหา"""
-    #     try:
-    #         if hasattr(self.parent, '_is_sending_sms'):
-    #             self.parent._is_sending_sms = True
-            
-    #         self._update_status("เริ่มกระบวนการส่ง SMS...")
-            
-    #         # 1. ตรวจสอบ serial connection
-    #         if not hasattr(self.parent, 'serial_thread') or not self.parent.serial_thread:
-    #             raise Exception("ไม่มีการเชื่อมต่อ Serial")
-            
-    #         if not self.parent.serial_thread.isRunning():
-    #             raise Exception("การเชื่อมต่อ Serial ไม่ทำงาน")
-            
-    #         serial_thread = self.parent.serial_thread
-            
-    #         # 2. เข้ารหัสข้อมูล
-    #         self._update_status("เข้ารหัสข้อความ...")
-    #         phone_hex = encode_text_to_ucs2(phone_number)
-    #         msg_ucs2 = encode_text_to_ucs2(message)
-            
-    #         # 3. ตั้งค่า SMS mode แบบง่าย
-    #         self._update_status("ตั้งค่า SMS Mode...")
-            
-    #         commands = [
-    #             'AT+CMGF=1',
-    #             'AT+CSCS="UCS2"', 
-    #             'AT+CSMP=17,167,0,8'
-    #         ]
-            
-    #         for cmd in commands:
-    #             self._resp(f"[SMS CMD] {cmd}")
-    #             success = serial_thread.send_command(cmd)
-    #             if not success:
-    #                 raise Exception(f"คำสั่ง {cmd} ไม่สำเร็จ")
-    #             time.sleep(0.5)  # รอให้ command ประมวลผล
-            
-    #         # 4. เตรียมส่ง SMS
-    #         self._update_status("เตรียมส่งข้อความ...")
-    #         sms_cmd = f'AT+CMGS="{phone_hex}"'
-    #         self._resp(f"[SMS PREPARE] {sms_cmd}")
-            
-    #         success = serial_thread.send_command(sms_cmd)
-    #         if not success:
-    #             raise Exception("ไม่สามารถเตรียม SMS ได้")
-            
-    #         time.sleep(1)  # รอ SMS prompt
-            
-    #         # 5. ส่งข้อความ + Ctrl+Z
-    #         self._update_status("ส่งข้อความ SMS...")
-    #         sms_data = msg_ucs2.encode() + bytes([26])  # 26 = Ctrl+Z
-            
-    #         raw_success = serial_thread.send_raw(sms_data)
-    #         if not raw_success:
-    #             raise Exception("ไม่สามารถส่งข้อมูล SMS ได้")
-            
-    #         self._resp(f"[SMS CONTENT] ส่งข้อความ: {message}")
-            
-    #         # 6. รอผลการส่ง (แบบง่าย)
-    #         self._update_status("รอผลการส่ง...")
-    #         time.sleep(3)  # รอให้ SMS ถูกส่ง
-            
-    #         # 7. บันทึก log สำเร็จ
-    #         self._save_sms_success_log(phone_number, message)
-            
-    #         # 8. แสดงผลสำเร็จ
-    #         if hasattr(self.parent, 'loading_widget') and self.parent.loading_widget:
-    #             self.parent.loading_widget.complete_sending_success()
-            
-    #         self._resp("[SMS SUCCESS] ส่ง SMS เสร็จสิ้น")
-    #         return True
-            
-    #     except Exception as e:
-    #         error_msg = f"เกิดข้อผิดพลาดในการส่ง SMS: {str(e)}"
-    #         self._handle_sms_error(phone_number, message, error_msg)
-    #         return False
-    #     finally:
-    #         if hasattr(self.parent, '_is_sending_sms'):
-    #             self.parent._is_sending_sms = False
     def _send_sms_process(self, phone_number, message):
-        """กระบวนการส่ง SMS แบบเงียบ - แก้ไขการปิด loading widget"""
+        """กระบวนการส่ง SMS"""
         try:
             if hasattr(self.parent, '_is_sending_sms'):
                 self.parent._is_sending_sms = True
             
-            # ตรวจสอบ serial connection
-            if not hasattr(self.parent, 'serial_thread') or not self.parent.serial_thread:
-                raise Exception("ไม่มีการเชื่อมต่อ Serial")
-            
-            if not self.parent.serial_thread.isRunning():
-                raise Exception("การเชื่อมต่อ Serial ไม่ทำงาน")
-            
-            serial_thread = self.parent.serial_thread
-            
-            # เข้ารหัสข้อมูล
+            # เข้ารหัสข้อความ
             phone_hex = encode_text_to_ucs2(phone_number)
             msg_ucs2 = encode_text_to_ucs2(message)
             
-            # ส่งคำสั่ง AT
-            commands = ['AT+CMGF=1', 'AT+CSCS="UCS2"', 'AT+CSMP=17,167,0,8']
+            # ส่งคำสั่ง AT ตามลำดับ
+            self._send_at_command_with_progress('AT+CMGF=1', "เชื่อมต่อกับ Modem...")
+            time.sleep(0.2)
+            self._send_at_command_with_progress('AT+CSCS="UCS2"', "ตั้งค่า AT Commands...")
+            time.sleep(0.2)
+            self._send_at_command_with_progress('AT+CSMP=17,167,0,8', "เตรียมข้อความ...")
+            time.sleep(0.2)
+            self._send_at_command_with_progress(f'AT+CMGS="{phone_hex}"', "เข้ารหัสข้อมูล...")
+            time.sleep(0.5)
+
+            # อัพเดทสถานะ
+            if hasattr(self.parent, 'loading_widget'):
+                self.parent.loading_widget.update_status("ส่งข้อความ SMS...")
             
-            for cmd in commands:
-                if hasattr(serial_thread, 'set_command_source'):
-                    serial_thread.set_command_source('SMS')
-                success = serial_thread.send_command(cmd)
-                if not success:
-                    raise Exception(f"คำสั่ง {cmd} ไม่สำเร็จ")
-                time.sleep(0.5)
-            
-            # ส่ง SMS
-            sms_cmd = f'AT+CMGS="{phone_hex}"'
-            if hasattr(serial_thread, 'set_command_source'):
-                serial_thread.set_command_source('SMS')
-            success = serial_thread.send_command(sms_cmd)
+            # ส่งข้อความ
+            success = self.parent.serial_thread.send_raw(msg_ucs2.encode() + bytes([26]))
             if not success:
-                raise Exception("ไม่สามารถเตรียม SMS ได้")
+                raise Exception("ไม่สามารถส่งข้อมูล SMS ผ่าน Serial ได้")
             
-            time.sleep(1)
+            if hasattr(self.parent, 'update_at_command_display'):
+                self.parent.update_at_command_display(f"SMS Content: {message}")
             
-            sms_data = msg_ucs2.encode() + bytes([26])
-            raw_success = serial_thread.send_raw(sms_data)
-            if not raw_success:
-                raise Exception("ไม่สามารถส่งข้อมูล SMS ได้")
+            # บันทึก log สำเร็จ
+            self._save_sms_success_log(phone_number, message)
             
-            time.sleep(3)
-            
-            # บันทึก log แบบเงียบ
-            try:
-                from services.sms_log import log_sms_sent
-                log_sms_sent(phone_number, message, "ส่งสำเร็จ")
-            except:
-                pass  # เพิกเฉยต่อข้อผิดพลาดของ log
-            
-            # ปิด loading widget แบบง่ายๆ - ไม่เรียก method ที่ไม่มี
-            try:
-                if hasattr(self.parent, 'loading_widget') and self.parent.loading_widget:
-                    # ลองปิดแบบต่างๆ
-                    if hasattr(self.parent.loading_widget, 'close'):
-                        self.parent.loading_widget.close()
-                    elif hasattr(self.parent.loading_widget, 'hide'):
-                        self.parent.loading_widget.hide()
-                    self.parent.loading_widget = None
-                    
-                if hasattr(self.parent, 'loading_dialog') and self.parent.loading_dialog:
-                    if hasattr(self.parent.loading_dialog, 'close'):
-                        self.parent.loading_dialog.close()
-                    self.parent.loading_dialog = None
-            except:
-                pass  # เพิกเฉยต่อข้อผิดพลาดของการปิด widget
-            
-            # แสดงผลลัพธ์เพียงบรรทัดเดียว
-            from datetime import datetime
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            truncated_msg = message[:20] + "..." if len(message) > 20 else message
-            
-            final_result = f"[{timestamp}] ✅ SMS sent | To: {phone_number} | Msg: {truncated_msg}"
-            self._resp(final_result)
+            # แสดงผลสำเร็จ
+            if hasattr(self.parent, 'loading_widget'):
+                self.parent.loading_widget.complete_sending_success()
             
             return True
             
         except Exception as e:
-            # จัดการ error แบบง่ายๆ
-            from datetime import datetime
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            error_msg = f"[{timestamp}] ❌ SMS Failed | To: {phone_number} | Error: {str(e)}"
-            
-            # ปิด loading widget ในกรณี error
-            try:
-                if hasattr(self.parent, 'loading_widget') and self.parent.loading_widget:
-                    if hasattr(self.parent.loading_widget, 'close'):
-                        self.parent.loading_widget.close()
-                    self.parent.loading_widget = None
-                if hasattr(self.parent, 'loading_dialog') and self.parent.loading_dialog:
-                    if hasattr(self.parent.loading_dialog, 'close'):
-                        self.parent.loading_dialog.close()
-                    self.parent.loading_dialog = None
-            except:
-                pass
-            
-            # แสดงข้อผิดพลาด
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(error_msg)
-            
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.critical(
-                self.parent, 
-                "SMS Failed", 
-                f"Failed to send SMS to {phone_number}\n{str(e)}"
-            )
-            
+            error_msg = f"เกิดข้อผิดพลาดในการส่ง SMS: {str(e)}"
+            self._handle_sms_error(phone_number, message, error_msg)
             return False
-            
-        finally:
-            if hasattr(self.parent, '_is_sending_sms'):
-                self.parent._is_sending_sms = False
-
-    def _close_loading_widget_safely(self):
-        """ปิด loading widget อย่างปลอดภัย - ไม่แสดงข้อความ success"""
-        try:
-            if hasattr(self.parent, 'loading_widget') and self.parent.loading_widget:
-                # วิธีที่ 1: ลองปิดแบบธรรมดา
-                if hasattr(self.parent.loading_widget, 'close'):
-                    self.parent.loading_widget.close()
-                
-                # วิธีที่ 2: ลองซ่อน widget
-                elif hasattr(self.parent.loading_widget, 'hide'):
-                    self.parent.loading_widget.hide()
-                
-                # วิธีที่ 3: ลองลบ widget
-                elif hasattr(self.parent.loading_widget, 'deleteLater'):
-                    self.parent.loading_widget.deleteLater()
-                
-                # รีเซ็ต reference
-                self.parent.loading_widget = None
-                
-            # ลองปิด loading dialog ด้วย (กรณีมี dialog แยก)
-            if hasattr(self.parent, 'loading_dialog') and self.parent.loading_dialog:
-                if hasattr(self.parent.loading_dialog, 'close'):
-                    self.parent.loading_dialog.close()
-                self.parent.loading_dialog = None
-                
-        except Exception as e:
-            # หากเกิดข้อผิดพลาดในการปิด loading ให้เพิกเฉยและดำเนินการต่อ
-            print(f"Warning: Could not close loading widget: {e}")
     
-    def _save_sms_success_log_silent(self, phone_number, message):
-        """บันทึก SMS สำเร็จแบบเงียบสนิท"""
-        try:
-            from services.sms_log import log_sms_sent
-            log_sms_sent(phone_number, message, "ส่งสำเร็จ")
-        except Exception as e:
-            # บันทึกแค่ใน console ไม่แสดงใน UI
-            print(f"Silent log error: {e}")
-
-    
-    def _check_and_configure_smsc(self, serial_thread):
-        """ตรวจสอบและตั้งค่า SMSC"""
-        try:
-            # ตรวจสอบ SMSC ปัจจุบัน
-            result = serial_thread.send_command_with_response('AT+CSCA?', timeout=5)
-            
-            if not result['success']:
-                return {'success': False, 'error': 'Cannot check SMSC'}
-            
-            response = result['response']
-            self._resp(f"[SMSC CHECK] {response}")
-            
-            # หา SMSC number
-            import re
-            smsc_match = re.search(r'\+CSCA:\s*"([^"]*)"', response)
-            
-            if smsc_match:
-                smsc_number = smsc_match.group(1)
-                if smsc_number and len(smsc_number) > 5:
-                    self._resp(f"[SMSC OK] Current SMSC: {smsc_number}")
-                    return {'success': True, 'smsc': smsc_number}
-            
-            # ถ้าไม่มี SMSC ให้ตั้งค่า default
-            default_smsc = self._get_carrier_default_smsc()
-            self._resp(f"[SMSC SET] Setting default SMSC: {default_smsc}")
-            
-            set_result = serial_thread.send_command_with_response(
-                f'AT+CSCA="{default_smsc}"', timeout=5
-            )
-            
-            if set_result['success']:
-                self._resp(f"[SMSC SET OK] SMSC set successfully")
-                return {'success': True, 'smsc': default_smsc}
-            else:
-                return {'success': False, 'error': f'Cannot set SMSC: {set_result["error"]}'}
-                
-        except Exception as e:
-            return {'success': False, 'error': f'SMSC check error: {str(e)}'}
-
-    def _check_network_status(self, serial_thread):
-        """ตรวจสอบสถานะเครือข่าย"""
-        try:
-            result = serial_thread.send_command_with_response('AT+CREG?', timeout=5)
-            
-            if not result['success']:
-                return {'registered': False, 'error': 'Cannot check network'}
-            
-            response = result['response']
-            self._resp(f"[NETWORK CHECK] {response}")
-            
-            # หาสถานะเครือข่าย
-            import re
-            creg_match = re.search(r'\+CREG:\s*\d+,(\d+)', response)
-            
-            if creg_match:
-                status = int(creg_match.group(1))
-                
-                if status == 1:
-                    self._resp("[NETWORK OK] Registered on home network")
-                    return {'registered': True, 'status': 'Home Network'}
-                elif status == 5:
-                    self._resp("[NETWORK OK] Registered roaming")
-                    return {'registered': True, 'status': 'Roaming'}
-                else:
-                    status_msg = {
-                        0: 'Not registered',
-                        2: 'Searching for network',
-                        3: 'Registration denied'
-                    }.get(status, f'Unknown status: {status}')
-                    
-                    return {'registered': False, 'error': f'Network status: {status_msg}'}
-            
-            return {'registered': False, 'error': 'Invalid network response'}
-            
-        except Exception as e:
-            return {'registered': False, 'error': f'Network check error: {str(e)}'}
-
-    def _get_carrier_default_smsc(self):
-        """หา SMSC default ตาม carrier"""
-        try:
-            if hasattr(self.parent, 'sims') and self.parent.sims:
-                sim = self.parent.sims[0]
-                carrier = getattr(sim, 'carrier', '').lower()
-                
-                # SMSC ของ carriers ในไทย
-                carrier_smsc = {
-                    'ais': '+66651000111',
-                    'dtac': '+66612000111', 
-                    'true': '+66627000111',
-                    'truemove': '+66627000111',
-                    'tot': '+66681000111'
-                }
-                
-                for name, smsc in carrier_smsc.items():
-                    if name in carrier:
-                        return smsc
-            
-            # Default fallback
-            return '+66651000111'  # AIS default
-            
-        except Exception:
-            return '+66651000111'
-    
-    def _check_and_set_smsc(self):
-        """ตรวจสอบและตั้งค่า SMS Center (SMSC)"""
-        try:
-            # ดึง SMSC ปัจจุบัน
-            if hasattr(self.parent, 'loading_widget'):
-                self.parent.loading_widget.update_status("ตรวจสอบ SMS Center...")
-            
-            result = self.parent.serial_thread.send_command_with_response('AT+CSCA?', timeout=5)
-            if not result['success']:
-                return {'success': False, 'error': 'ไม่สามารถตรวจสอบ SMSC ได้'}
-            
-            response = result['response']
-            self._resp(f"[SMSC CHECK] {response}")
-            
-            # ตรวจสอบว่ามี SMSC หรือไม่
-            import re
-            smsc_match = re.search(r'\+CSCA:\s*"([^"]*)"', response)
-            
-            if smsc_match:
-                smsc_number = smsc_match.group(1)
-                if smsc_number and smsc_number != '' and len(smsc_number) > 5:
-                    self._resp(f"[SMSC OK] Current SMSC: {smsc_number}")
-                    return {'success': True, 'smsc': smsc_number}
-            
-            # ถ้าไม่มี SMSC ให้ตั้งค่าเป็นค่า default ของแต่ละ carrier
-            default_smsc = self._get_default_smsc()
-            if default_smsc:
-                set_result = self.parent.serial_thread.send_command_with_response(
-                    f'AT+CSCA="{default_smsc}"', timeout=5
-                )
-                
-                if set_result['success']:
-                    self._resp(f"[SMSC SET] Set SMSC to: {default_smsc}")
-                    return {'success': True, 'smsc': default_smsc}
-            
-            return {'success': False, 'error': 'ไม่สามารถตั้งค่า SMSC ได้'}
-            
-        except Exception as e:
-            return {'success': False, 'error': f'SMSC Check Error: {str(e)}'}
-
-    def _get_default_smsc(self):
-        """หา SMSC default ตาม carrier"""
-        try:
-            if not hasattr(self.parent, 'sims') or not self.parent.sims:
-                return None
-            
-            sim = self.parent.sims[0]
-            carrier = getattr(sim, 'carrier', '').lower()
-            
-            # SMSC ของ carrier ใหญ่ในไทย
-            smsc_map = {
-                'ais': '+66651000111',
-                'dtac': '+66612000111', 
-                'true': '+66627000111',
-                'truemove': '+66627000111',
-                'tot': '+66681000111'
-            }
-            
-            for key, smsc in smsc_map.items():
-                if key in carrier:
-                    return smsc
-            
-            # ถ้าไม่เจอให้ใช้ AIS (เป็น default ที่ใช้ได้บ่อย)
-            return '+66651000111'
-            
-        except Exception:
-            return '+66651000111'  # fallback
-    
-    def _check_network_registration(self):
-        """ตรวจสอบสถานะการลงทะเบียนเครือข่าย"""
-        try:
-            if hasattr(self.parent, 'loading_widget'):
-                self.parent.loading_widget.update_status("ตรวจสอบสัญญาณเครือข่าย...")
-            
-            # ตรวจสอบการลงทะเบียนเครือข่าย
-            result = self.parent.serial_thread.send_command_with_response('AT+CREG?', timeout=5)
-            
-            if not result['success']:
-                return {'registered': False, 'error': 'ไม่สามารถตรวจสอบเครือข่ายได้'}
-            
-            response = result['response']
-            self._resp(f"[NETWORK CHECK] {response}")
-            
-            # ตรวจสอบ response pattern +CREG: n,stat
-            import re
-            creg_match = re.search(r'\+CREG:\s*\d+,(\d+)', response)
-            
-            if creg_match:
-                status = int(creg_match.group(1))
-                
-                if status == 1:  # Registered (home network)
-                    return {'registered': True, 'status': 'Home Network'}
-                elif status == 5:  # Registered (roaming)
-                    return {'registered': True, 'status': 'Roaming'}
-                elif status == 0:
-                    return {'registered': False, 'error': 'ไม่ได้ลงทะเบียนเครือข่าย'}
-                elif status == 2:
-                    return {'registered': False, 'error': 'กำลังค้นหาเครือข่าย'}
-                elif status == 3:
-                    return {'registered': False, 'error': 'การลงทะเบียนถูกปฏิเสธ'}
-            
-            return {'registered': False, 'error': 'ไม่สามารถระบุสถานะเครือข่ายได้'}
-            
-        except Exception as e:
-            return {'registered': False, 'error': f'Network Check Error: {str(e)}'}
-
-    def _send_at_command_with_response_check(self, command, status_text, delay=0.5):
-        """ส่งคำสั่ง AT พร้อมตรวจสอบ response"""
-        if hasattr(self.parent, 'loading_widget'):
-            self.parent.loading_widget.update_status(status_text)
-        
-        if hasattr(self.parent, 'serial_thread'):
-            result = self.parent.serial_thread.send_command_with_response(command, timeout=5)
-            
-            if not result['success']:
-                raise Exception(f"คำสั่ง {command} ไม่สำเร็จ: {result.get('error', 'Unknown error')}")
-            
-            response = result['response'].strip()
-            
-            # ตรวจสอบว่าได้ OK response หรือไม่
-            if 'OK' not in response and 'ERROR' in response:
-                raise Exception(f"คำสั่ง {command} ได้รับ ERROR: {response}")
-            
-            self._resp(f"[CMD OK] {command} -> {response}")
-        
-        if hasattr(self.parent, 'update_at_command_display'):
-            self.parent.update_at_command_display(command)
-        
-        time.sleep(delay)
-
-    def _wait_for_sms_send_result(self, timeout=15):
-        """รอผลการส่ง SMS และตรวจสอบ"""
-        try:
-            start_time = time.time()
-            
-            while time.time() - start_time < timeout:
-                if hasattr(self.parent, 'serial_thread'):
-                    # อ่าน response ล่าสุด
-                    response = self.parent.serial_thread.get_recent_response()
-                    
-                    if response:
-                        response_upper = response.upper()
-                        
-                        # ตรวจสอบ success patterns
-                        if '+CMGS:' in response_upper and 'OK' in response_upper:
-                            # แยกเอา message reference number
-                            import re
-                            ref_match = re.search(r'\+CMGS:\s*(\d+)', response)
-                            ref_num = ref_match.group(1) if ref_match else 'Unknown'
-                            
-                            self._resp(f"[SMS SUCCESS] Message sent! Reference: {ref_num}")
-                            return {'success': True, 'reference': ref_num}
-                        
-                        # ตรวจสอบ error patterns
-                        if 'ERROR' in response_upper or '+CMS ERROR' in response_upper:
-                            error_msg = self._parse_sms_error(response)
-                            return {'success': False, 'error': error_msg}
-                
-                time.sleep(0.5)
-            
-            # timeout
-            return {'success': False, 'error': 'SMS send timeout - ไม่ได้รับการยืนยันจาก network'}
-            
-        except Exception as e:
-            return {'success': False, 'error': f'Error waiting for SMS result: {str(e)}'}
-
-    def _parse_sms_error(self, error_response):
-        """แปลงรหัส error เป็นข้อความที่เข้าใจได้"""
-        error_codes = {
-            '300': 'ME failure',
-            '301': 'SMS service of ME reserved',
-            '302': 'Operation not allowed',
-            '303': 'Operation not supported',
-            '304': 'Invalid PDU mode parameter',
-            '305': 'Invalid text mode parameter',
-            '310': 'SIM not inserted',
-            '311': 'SIM PIN required',
-            '312': 'PH-SIM PIN required',
-            '313': 'SIM failure',
-            '314': 'SIM busy',
-            '315': 'SIM wrong',
-            '316': 'SIM PUK required',
-            '317': 'SIM PIN2 required',
-            '318': 'SIM PUK2 required',
-            '320': 'Memory failure',
-            '321': 'Invalid memory index',
-            '322': 'Memory full',
-            '330': 'SMSC address unknown',
-            '331': 'No network service',
-            '332': 'Network timeout',
-            '340': 'No +CNMA acknowledgement expected',
-            '500': 'Unknown error'
-        }
-        
-        import re
-        error_match = re.search(r'\+CMS ERROR:\s*(\d+)', error_response)
-        
-        if error_match:
-            error_code = error_match.group(1)
-            error_desc = error_codes.get(error_code, f'Unknown error code: {error_code}')
-            return f"CMS Error {error_code}: {error_desc}"
-        
-        return f"SMS Error: {error_response}"
-
     def _send_at_command_with_progress(self, command, status_text):
         """ส่งคำสั่ง AT พร้อมอัพเดท loading status"""
         if hasattr(self.parent, 'loading_widget'):
@@ -718,161 +178,87 @@ class SMSHandler:
         if hasattr(self.parent, 'update_at_command_display'):
             self.parent.update_at_command_display(command)
     
-    # def _save_sms_success_log(self, phone_number, message):
-    #     """บันทึก SMS ที่ส่งสำเร็จ"""
-    #     try:
-    #         from services.sms_log import log_sms_sent
-    #         log_sms_sent(phone_number, message, "ส่งสำเร็จ")
-            
-    #         if hasattr(self.parent, 'update_at_result_display'):
-    #             self.parent.update_at_result_display("[Log Saved] ✅ SMS sent recorded successfully.")
-    #     except Exception as e:
-    #         print(f"Error saving SMS success log: {e}")
-    #         if hasattr(self.parent, 'update_at_result_display'):
-    #             self.parent.update_at_result_display(f"[Log Error] ⚠️ Failed to save success log: {e}")
-    
     def _save_sms_success_log(self, phone_number, message):
-        """บันทึก SMS ที่ส่งสำเร็จ - แบบเงียบ"""
+        """บันทึก SMS ที่ส่งสำเร็จ"""
         try:
             from services.sms_log import log_sms_sent
             log_sms_sent(phone_number, message, "ส่งสำเร็จ")
             
-            # ไม่แสดง log success message อีกต่อไป
-            # if hasattr(self.parent, 'update_at_result_display'):
-            #     self.parent.update_at_result_display("[Log Saved] ✅ SMS sent recorded successfully.")
-                
+            if hasattr(self.parent, 'update_at_result_display'):
+                self.parent.update_at_result_display("[Log Saved] ✅ SMS sent recorded successfully.")
         except Exception as e:
             print(f"Error saving SMS success log: {e}")
-            # ไม่แสดง log error ใน UI
-
-    # def _handle_sms_error(self, phone_number, message, error_msg):
-    #     """จัดการข้อผิดพลาดในการส่ง SMS - ป้องกัน duplicate และ None error"""
-        
-    #     # ⭐ ป้องกันการเรียกซ้ำ
-    #     if hasattr(self, '_handling_error') and self._handling_error:
-    #         return
-    #     self._handling_error = True
-        
-    #     try:
-    #         # แสดงข้อผิดพลาดใน UI
-    #         if hasattr(self.parent, 'update_at_result_display'):
-    #             self.parent.update_at_result_display(f"[SMS ERROR] ❌ {error_msg}")
-            
-    #         # แสดง MessageBox
-    #         from PyQt5.QtWidgets import QMessageBox
-    #         QMessageBox.critical(
-    #             self.parent, 
-    #             "❌ ส่ง SMS ไม่สำเร็จ", 
-    #             f"ไม่สามารถส่ง SMS ได้\n\n"
-    #             f"📞 เบอร์: {phone_number}\n"
-    #             f"💬 ข้อความ: {message[:50]}{'...' if len(message) > 50 else ''}\n\n"
-    #             f"❌ สาเหตุ: {error_msg}\n\n"
-    #             f"💡 แนะนำ:\n"
-    #             f"• ตรวจสอบ SIM Card\n"
-    #             f"• คลิก 'Refresh Ports'\n"
-    #             f"• ตรวจสอบการเชื่อมต่อ"
-    #         )
-            
-    #         # บันทึก log ข้อผิดพลาด
-    #         self._save_sms_error_log(phone_number, message, error_msg)
-            
-    #         # ⭐ ตรวจสอบว่า loading_widget มีอยู่จริงก่อนเรียกใช้
-    #         if (hasattr(self.parent, 'loading_widget') and 
-    #             self.parent.loading_widget is not None and
-    #             hasattr(self.parent.loading_widget, 'complete_sending_error')):
-    #             self.parent.loading_widget.complete_sending_error(error_msg)
-    #         else:
-    #             # ถ้าไม่มี loading_widget ให้ปิด loading dialog
-    #             if (hasattr(self.parent, 'loading_dialog') and 
-    #                 self.parent.loading_dialog is not None):
-    #                 self.parent.loading_dialog.close()
-    #                 self.parent.loading_dialog = None
-            
-    #         # รีเซ็ตสถานะ
-    #         if hasattr(self.parent, '_is_sending_sms'):
-    #             self.parent._is_sending_sms = False
-                
-    #     except Exception as e:
-    #         print(f"Error in _handle_sms_error: {e}")
-    #     finally:
-    #         # ⭐ รีเซ็ตการป้องกันการเรียกซ้ำ
-    #         self._handling_error = False
-
+            if hasattr(self.parent, 'update_at_result_display'):
+                self.parent.update_at_result_display(f"[Log Error] ⚠️ Failed to save success log: {e}")
+    
     def _handle_sms_error(self, phone_number, message, error_msg):
-        """จัดการข้อผิดพลาด - แสดงแบบสั้นกระชับ"""
+        """จัดการข้อผิดพลาดในการส่ง SMS - ป้องกัน duplicate และ None error"""
         
+        # ⭐ ป้องกันการเรียกซ้ำ
         if hasattr(self, '_handling_error') and self._handling_error:
             return
         self._handling_error = True
         
         try:
-            # ปิด loading widget อย่างปลอดภัย
-            self._close_loading_widget_safely()
-            
-            # แสดงข้อผิดพลาดแบบง่าย
-            from datetime import datetime
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            simple_error = f"[{timestamp}] ❌ SMS Failed | To: {phone_number} | Error: {error_msg}"
-            
+            # แสดงข้อผิดพลาดใน UI
             if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(simple_error)
+                self.parent.update_at_result_display(f"[SMS ERROR] ❌ {error_msg}")
             
             # แสดง MessageBox
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.critical(
                 self.parent, 
-                "SMS Failed", 
-                f"Failed to send SMS to {phone_number}\n{error_msg}"
+                "❌ ส่ง SMS ไม่สำเร็จ", 
+                f"ไม่สามารถส่ง SMS ได้\n\n"
+                f"📞 เบอร์: {phone_number}\n"
+                f"💬 ข้อความ: {message[:50]}{'...' if len(message) > 50 else ''}\n\n"
+                f"❌ สาเหตุ: {error_msg}\n\n"
+                f"💡 แนะนำ:\n"
+                f"• ตรวจสอบ SIM Card\n"
+                f"• คลิก 'Refresh Ports'\n"
+                f"• ตรวจสอบการเชื่อมต่อ"
             )
             
-            # บันทึก error log แบบเงียบ
-            self._save_sms_error_log_silent(phone_number, message, error_msg)
+            # บันทึก log ข้อผิดพลาด
+            self._save_sms_error_log(phone_number, message, error_msg)
             
+            # ⭐ ตรวจสอบว่า loading_widget มีอยู่จริงก่อนเรียกใช้
+            if (hasattr(self.parent, 'loading_widget') and 
+                self.parent.loading_widget is not None and
+                hasattr(self.parent.loading_widget, 'complete_sending_error')):
+                self.parent.loading_widget.complete_sending_error(error_msg)
+            else:
+                # ถ้าไม่มี loading_widget ให้ปิด loading dialog
+                if (hasattr(self.parent, 'loading_dialog') and 
+                    self.parent.loading_dialog is not None):
+                    self.parent.loading_dialog.close()
+                    self.parent.loading_dialog = None
+            
+            # รีเซ็ตสถานะ
+            if hasattr(self.parent, '_is_sending_sms'):
+                self.parent._is_sending_sms = False
+                
         except Exception as e:
             print(f"Error in _handle_sms_error: {e}")
         finally:
+            # ⭐ รีเซ็ตการป้องกันการเรียกซ้ำ
             self._handling_error = False
-
-    def _save_sms_error_log_silent(self, phone_number, message, error_msg):
-        """บันทึก error log แบบเงียบ"""
-        try:
-            from services.sms_log import log_sms_sent
-            status = f"ส่งไม่สำเร็จ: {error_msg}"
-            log_sms_sent(phone_number, message, status)
-        except Exception as e:
-            print(f"Error saving SMS error log: {e}")
-    
-    # def _save_sms_error_log(self, phone_number, message, error_msg):
-    #     """บันทึก SMS ที่ส่งไม่สำเร็จ"""
-    #     try:
-    #         from services.sms_log import log_sms_sent
-    #         status = f"ส่งไม่สำเร็จ: {error_msg}"
-    #         log_sms_sent(phone_number, message, status)
-            
-    #         if hasattr(self.parent, 'update_at_result_display'):
-    #             self.parent.update_at_result_display("[Log Saved] ❌ SMS error recorded in log.")
-                
-    #     except Exception as e:
-    #         print(f"Error saving SMS error log: {e}")
-    #         if hasattr(self.parent, 'update_at_result_display'):
-    #             self.parent.update_at_result_display(f"[Log Error] ⚠️ Failed to save error log: {e}")
     
     def _save_sms_error_log(self, phone_number, message, error_msg):
-        """บันทึก SMS ที่ส่งไม่สำเร็จ - แบบเงียบ"""
+        """บันทึก SMS ที่ส่งไม่สำเร็จ"""
         try:
             from services.sms_log import log_sms_sent
             status = f"ส่งไม่สำเร็จ: {error_msg}"
             log_sms_sent(phone_number, message, status)
             
-            # ไม่แสดง log message ใน UI อีกต่อไป
-            # if hasattr(self.parent, 'update_at_result_display'):
-            #     self.parent.update_at_result_display("[Log Saved] ❌ SMS error recorded in log.")
-                    
+            if hasattr(self.parent, 'update_at_result_display'):
+                self.parent.update_at_result_display("[Log Saved] ❌ SMS error recorded in log.")
+                
         except Exception as e:
             print(f"Error saving SMS error log: {e}")
-            # ไม่แสดง log error ใน UI
-
+            if hasattr(self.parent, 'update_at_result_display'):
+                self.parent.update_at_result_display(f"[Log Error] ⚠️ Failed to save error log: {e}")
+    
     def process_new_sms_signal(self, data_line):
         """จัดการสัญญาณ SMS ใหม่ - Fixed 2-line SMS processing"""
         line = data_line.strip()

@@ -47,146 +47,6 @@ class SerialMonitorThread(QThread):
         self.command_source = None  # 'MANUAL', 'SIGNAL_QUALITY', 'BACKGROUND'
         self.command_source_queue = deque(maxlen=10)
         
-    def send_command_with_response(self, command, timeout=5):
-        """ส่งคำสั่ง AT และรอ response - METHOD ใหม่"""
-        import time
-        
-        try:
-            # ล้าง buffer เก่าก่อนส่งคำสั่ง
-            if hasattr(self, 'serial_connection') and self.serial_connection:
-                if self.serial_connection.in_waiting:
-                    self.serial_connection.read(self.serial_connection.in_waiting)
-            
-            # ส่งคำสั่งผ่าน method เดิม
-            success = self.send_command(command)
-            if not success:
-                return {'success': False, 'error': 'Failed to send command', 'response': ''}
-            
-            # รอและอ่าน response
-            start_time = time.time()
-            response_buffer = ""
-            
-            while time.time() - start_time < timeout:
-                if hasattr(self, 'serial_connection') and self.serial_connection:
-                    if self.serial_connection.in_waiting:
-                        try:
-                            data = self.serial_connection.read(self.serial_connection.in_waiting)
-                            response_buffer += data.decode('utf-8', errors='ignore')
-                            
-                            # ตรวจสอบ response termination
-                            response_upper = response_buffer.upper()
-                            if 'OK\r\n' in response_buffer or 'OK' in response_upper:
-                                return {'success': True, 'response': response_buffer.strip()}
-                            elif 'ERROR' in response_upper or '+CMS ERROR' in response_upper:
-                                return {'success': False, 'error': f"AT Command Error: {response_buffer.strip()}"}
-                                
-                        except Exception as decode_error:
-                            print(f"Response decode error: {decode_error}")
-                
-                time.sleep(0.1)
-            
-            # Timeout occurred
-            return {'success': False, 'error': 'Command timeout', 'response': response_buffer.strip()}
-            
-        except Exception as e:
-            return {'success': False, 'error': f"Send command error: {str(e)}", 'response': ''}
-    
-    def get_recent_response(self):
-        """ดึง response ล่าสุดที่มีใน buffer - METHOD เสริม"""
-        try:
-            if hasattr(self, 'serial_connection') and self.serial_connection:
-                if self.serial_connection.in_waiting:
-                    data = self.serial_connection.read(self.serial_connection.in_waiting)
-                    return data.decode('utf-8', errors='ignore')
-            return None
-        except Exception as e:
-            print(f"Get response error: {e}")
-            return None
-    
-    def send_at_command_with_prompt_wait(self, command, timeout=10):
-        """ส่งคำสั่ง AT และรอ SMS prompt '>' - METHOD สำหรับ SMS"""
-        import time
-        
-        try:
-            # ล้าง buffer
-            if hasattr(self, 'serial_connection') and self.serial_connection:
-                if self.serial_connection.in_waiting:
-                    self.serial_connection.read(self.serial_connection.in_waiting)
-            
-            # ส่งคำสั่ง
-            success = self.send_command(command)
-            if not success:
-                return {'success': False, 'error': 'Failed to send SMS command'}
-            
-            # รอ SMS prompt '>'
-            start_time = time.time()
-            response = ""
-            
-            while time.time() - start_time < timeout:
-                if hasattr(self, 'serial_connection') and self.serial_connection:
-                    if self.serial_connection.in_waiting:
-                        data = self.serial_connection.read(self.serial_connection.in_waiting)
-                        response += data.decode('utf-8', errors='ignore')
-                        
-                        # ตรวจหา SMS prompt
-                        if '> ' in response or '>' in response:
-                            return {'success': True, 'response': response.strip()}
-                        
-                        # ตรวจหา error
-                        if 'ERROR' in response.upper():
-                            return {'success': False, 'error': f"SMS Command Error: {response.strip()}"}
-                
-                time.sleep(0.1)
-            
-            return {'success': False, 'error': 'SMS prompt timeout'}
-            
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-    
-    def wait_for_sms_result(self, timeout=15):
-        """รอผลการส่ง SMS (+CMGS response) - METHOD สำหรับ SMS"""
-        import time
-        
-        try:
-            start_time = time.time()
-            response = ""
-            
-            while time.time() - start_time < timeout:
-                if hasattr(self, 'serial_connection') and self.serial_connection:
-                    if self.serial_connection.in_waiting:
-                        data = self.serial_connection.read(self.serial_connection.in_waiting)
-                        response += data.decode('utf-8', errors='ignore')
-                        
-                        # ตรวจสอบ SMS success
-                        if '+CMGS:' in response.upper() and 'OK' in response.upper():
-                            # หา message reference number
-                            import re
-                            ref_match = re.search(r'\+CMGS:\s*(\d+)', response)
-                            ref_number = ref_match.group(1) if ref_match else 'Unknown'
-                            
-                            return {
-                                'success': True, 
-                                'reference': ref_number, 
-                                'response': response.strip()
-                            }
-                        
-                        # ตรวจสอบ SMS error
-                        if ('ERROR' in response.upper() or 
-                            '+CMS ERROR' in response.upper() or
-                            '+CME ERROR' in response.upper()):
-                            
-                            return {
-                                'success': False, 
-                                'error': f"SMS Send Error: {response.strip()}"
-                            }
-                
-                time.sleep(0.2)
-            
-            return {'success': False, 'error': 'SMS result timeout'}
-            
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-        
     def set_command_source(self, source):
         """กำหนดแหล่งที่มาของคำสั่ง"""
         self.command_source = source
@@ -228,10 +88,6 @@ class SerialMonitorThread(QThread):
     def process_received_line(self, line):
         """ประมวลผลข้อมูลที่รับมา - Fixed SMS 2-line processing"""
         
-        # --- hide SMS setup echo ---
-        if line.strip().upper().startswith("AT+CMGF"):
-            return
-    
         # ตรวจสอบ CMTI (SMS notification)
         if line.startswith("+CMTI:"):
             self.new_sms_signal.emit(line)
@@ -465,20 +321,15 @@ class SerialMonitorThread(QThread):
                 if not self.command_source:
                     background_commands = ["AT+CSQ", "AT+CESQ", "AT+COPS", "AT+CREG", "AT+CIMI", "AT+CCID", "AT+QCCID", "AT+CNUM"]
                     if any(bg_cmd in command.upper() for bg_cmd in background_commands):
-                        self.command_source = 'SIGNAL_QUALITY'
+                        self.command_source = 'SIGNAL_QUALITY'  # เปลี่ยนจาก BACKGROUND
                     else:
                         self.command_source = 'MANUAL'
                 
                 # บันทึก command กับ source
                 self.command_source_queue.append((command, self.command_source))
                 
-                # ✅ แก้ไขตรงนี้ - ปิดการแสดง SMS commands
-                sms_commands = ["AT+CMGF", "AT+CSCS", "AT+CSMP", "AT+CMGS"]
-                is_sms_command = any(sms_cmd in command.upper() for sms_cmd in sms_commands)
-                
                 # ส่ง signal ไปยังที่เหมาะสม
-                if self.command_source == 'MANUAL' and not is_sms_command:
-                    # แสดงเฉพาะ Manual commands ที่ไม่ใช่ SMS
+                if self.command_source == 'MANUAL':
                     self.at_response_signal.emit(f"[SENT] {command}")
                 elif self.command_source == 'SIGNAL_QUALITY':
                     # ไม่ส่งไปหน้าหลัก เพราะจะแสดงใน Signal Quality window เอง
@@ -486,7 +337,6 @@ class SerialMonitorThread(QThread):
                 elif self.command_source == 'BACKGROUND':
                     # ไม่แสดงเลย
                     pass
-                # ✅ SMS commands จะไม่ถูกแสดงใน Response area อีกต่อไป
                 
                 # รีเซ็ต source
                 self.command_source = None

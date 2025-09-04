@@ -4,5 +4,10 @@
 # Python cache
 __pycache__/
 *.pyc
+
+# Logs
 log/*.csv
+
 settings.json
+
+printf "\n__pycache__/\n*.pyc\nlog/*.csv\nsettings.json\n" >> .gitignore
