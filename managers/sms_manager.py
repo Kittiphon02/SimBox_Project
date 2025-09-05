@@ -12,7 +12,9 @@ from datetime import datetime
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtCore import QTimer
 from core.utility_functions import decode_ucs2_to_text, encode_text_to_ucs2, get_timestamp_formatted
-from services.sms_log import get_log_file_path
+from services.sms_log import list_logs
+from services.utility_functions import dedupe_event
+
 
 class SMSHandler:
     """จัดการการประมวลผล SMS ที่รับเข้า"""
@@ -194,6 +196,11 @@ class SMSHandler:
     def _handle_sms_error(self, phone_number, message, error_msg):
         """จัดการข้อผิดพลาดในการส่ง SMS - ป้องกัน duplicate และ None error"""
         
+        # กันซ้ำตามเบอร์+ข้อความ ภายใน 5 วินาที
+        key = f"send_fail:{phone_number}:{hash(message)}"
+        if not dedupe_event(key, window_seconds=5):
+            return
+    
         # ⭐ ป้องกันการเรียกซ้ำ
         if hasattr(self, '_handling_error') and self._handling_error:
             return
@@ -566,41 +573,18 @@ class SMSHandler:
             return self._fallback_save_sms(sender, message, datetime_str)
 
     def _fallback_save_sms(self, sender, message, datetime_str):
-        """บันทึก SMS แบบ fallback เมื่อ main method ไม่สำเร็จ"""
+        """บันทึก SMS แบบ fallback → เขียน DB (ไม่ใช้ CSV)"""
         try:
-             # ดึง log file path
-            log_file = get_log_file_path("sms_inbox_log.csv")
-            
-            # สร้างโฟลเดอร์ถ้าไม่มี
-            os.makedirs(os.path.dirname(log_file), exist_ok=True)
-            
-            # ตรวจสอบว่าไฟล์มีอยู่หรือไม่ (สำหรับ header)
-            is_new_file = not os.path.exists(log_file) or os.path.getsize(log_file) == 0
-            
-            # เตรียม timestamp
-            now = datetime.now()
-            timestamp = now.strftime('%d/%m/%Y,%H:%M:%S+07')
-            
-            # บันทึกลงไฟล์
-            with open(log_file, 'a', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-                
-                # เขียน header ถ้าเป็นไฟล์ใหม่
-                if is_new_file:
-                    writer.writerow(['Received_Time', 'Sender', 'Message', 'Status'])
-                
-                # เขียนข้อมูล SMS
-                writer.writerow([timestamp, sender, message, 'รับเข้า (real-time)'])
-            
+            from services.sms_log import log_sms_inbox
+            log_sms_inbox(sender, message, "รับเข้า (fallback)")
             if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[FALLBACK SUCCESS] SMS saved using fallback method")
-                
+                self.parent.update_at_result_display('[LOG] Fallback saved to DB')
             return True
-            
         except Exception as e:
             if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[FALLBACK ERROR] Fallback save also failed: {e}")
+                self.parent.update_at_result_display(f"[LOG ERROR] Fallback failed: {e}")
             return False
+
 
 class SMSInboxManager:
     """จัดการ SMS inbox และการแสดงผล"""
@@ -703,49 +687,22 @@ class SMSInboxManager:
                 QMessageBox.critical(self.parent, "Error", error_msg)
     
     def _read_sms_from_log(self):
-        """อ่าน SMS จาก log file"""
+        """อ่าน SMS จากฐานข้อมูลแทนไฟล์ CSV"""
         try:
-            from services.sms_log import get_log_file_path
-            log_file = get_log_file_path('sms_inbox_log.csv')
-            
-            log_lines = []
-            
-            if not os.path.isfile(log_file):
-                return log_lines
-            
-            try:
-                with open(log_file, newline='', encoding='utf-8') as f:
-                    content = f.read().strip()
-                    if not content:
-                        return log_lines
-                        
-                    f.seek(0)
-                    reader = csv.reader(f)
-                    
-                    first_row = next(reader, None)
-                    if first_row and (first_row[0] == 'Received_Time' or first_row[0] == 'Datetime'):
-                        pass  # ข้าม header
-                    else:
-                        if first_row and len(first_row) >= 3:
-                            line_result = self._format_log_line(first_row)
-                            if line_result:
-                                log_lines.append(line_result)
-                    
-                    for row in reader:
-                        if len(row) >= 3:
-                            line_result = self._format_log_line(row)
-                            if line_result:
-                                log_lines.append(line_result)
-                            
-            except Exception as e:
-                print(f"Error reading SMS log: {e}")
-            
-            return log_lines
-            
+            rows = list_logs(direction="inbox", limit=500, order="DESC")
+            result = []
+            for r in rows:
+                dt = r.get('dt')
+                ts = dt.strftime('%d/%m/%Y,%H:%M:%S') if hasattr(dt,'strftime') else str(dt)
+                phone = r.get('phone') or ''
+                msg = r.get('message') or ''
+                result.append(f"[LOG] {ts} | {phone}: {msg}")
+            return result
         except Exception as e:
             if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[LOG ERROR] Error reading log: {e}")
+                self.parent.update_at_result_display(f"[LOG ERROR] Error reading DB: {e}")
             return []
+
     
     def _format_log_line(self, row):
         """จัดรูปแบบข้อมูล log line"""
@@ -770,46 +727,22 @@ class SMSLogReader:
         pass
     
     def read_sms_logs(self, log_type="inbox"):
-        """อ่าน SMS logs จากไฟล์
-        Args:
-            log_type (str): ประเภท log ("inbox" หรือ "sent")
-        Returns:
-            list: รายการ SMS ที่อ่านได้
-        """
-        try:
-            from services.sms_log import get_log_file_path
-            
-            if log_type == "inbox":
-                log_file = get_log_file_path('sms_inbox_log.csv')
-            else:
-                log_file = get_log_file_path('sms_sent_log.csv')
-            
-            sms_list = []
-            
-            if not os.path.isfile(log_file):
-                return sms_list
-            
-            with open(log_file, newline='', encoding='utf-8') as f:
-                reader = csv.reader(f)
-                
-                # ข้าม header
-                next(reader, None)
-                
-                for row in reader:
-                    if len(row) >= 3:
-                        sms_data = {
-                            'datetime': row[0],
-                            'phone': row[1],
-                            'message': row[2],
-                            'status': row[3] if len(row) > 3 else ""
-                        }
-                        sms_list.append(sms_data)
-            
-            return sms_list
-            
-        except Exception as e:
-            print(f"Error reading SMS logs: {e}")
-            return []
+        """อ่าน SMS logs จากฐานข้อมูลแทนไฟล์ CSV"""
+        from services.sms_log import list_logs
+        direction = 'inbox' if log_type == 'inbox' else 'sent'
+        rows = list_logs(direction=direction, limit=5000, order='DESC')
+        sms_list = []
+        for r in rows:
+            dt = r.get('dt')
+            dt_str = dt.strftime('%Y-%m-%d %H:%M:%S') if hasattr(dt,'strftime') else str(dt)
+            sms_list.append({
+                'datetime': dt_str,
+                'phone': (r.get('phone') or ''),
+                'message': (r.get('message') or ''),
+                'status': (r.get('status') or '')
+            })
+        return sms_list
+
     
     def export_sms_logs(self, sms_list, export_path):
         """ส่งออก SMS logs เป็นไฟล์

@@ -9,6 +9,7 @@ from PyQt5.QtCore import QTimer
 from core.utility_functions import encode_text_to_ucs2
 from core.constants import DEFAULT_AT_COMMANDS, AT_HISTORY_FILE
 
+DEMO_MODE = os.getenv("SIM_DEMO", "0") == "1"
 
 class ATCommandManager:
     """คลาสจัดการคำสั่ง AT และประวัติ"""
@@ -294,6 +295,18 @@ class SMSManager:
     def send_sms_with_loading(self, phone_number, message):
         """ส่ง SMS พร้อม loading dialog"""
         try:
+            # DEMO: ไม่ส่งจริง แต่บันทึกลง DB เหมือนส่งสำเร็จ
+            if DEMO_MODE:
+                from services.sms_log import log_sms_sent  # import ตรงนี้กัน circular import
+                log_sms_sent(phone_number, message, "ส่งสำเร็จ (DEMO)")
+                if hasattr(self.parent, 'update_at_result_display'):
+                    self.parent.update_at_result_display("[DEMO] ไม่ได้ส่งจริง แต่บันทึก DB แล้ว")
+                if hasattr(self.parent, 'loading_widget'):
+                    self.parent.loading_widget.complete_sending_success()
+                if hasattr(self.parent, '_is_sending_sms'):
+                    self.parent._is_sending_sms = False
+                return True
+
             # เข้ารหัสข้อความ
             phone_hex = encode_text_to_ucs2(phone_number)
             msg_ucs2 = encode_text_to_ucs2(message)
@@ -358,8 +371,8 @@ class SMSManager:
     def _save_sms_to_log(self, phone_number, message):
         """บันทึก SMS ที่ส่งไปในรูปแบบ log"""
         try:
-            from services.sms_log import append_sms_log
-            append_sms_log("sms_sent_log.csv", phone_number, message, "Sent")
+            # from services.sms_log import append_sms_log
+            # append_sms_log("sms_sent_log.csv", phone_number, message, "Sent")
             
             if hasattr(self.parent, 'update_at_result_display'):
                 self.parent.update_at_result_display("[Log Saved] SMS sent recorded.")

@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 import portalocker
 from core.utility_functions import normalize_phone_number
-from services.sms_log import get_log_file_path
+from services.sms_log import list_logs
 
 def get_log_directory_from_settings():
     """ดึง log directory จาก settings.json"""
@@ -707,96 +707,38 @@ class SmsLogDialog(QDialog):
             
     # ==================== 4. DATA LOADING ====================
     def load_log(self):
-        """โหลดข้อมูล SMS จากไฟล์ - Updated สำหรับ SMS Fail"""
+        """โหลดข้อมูลจากฐานข้อมูล MySQL (แทน CSV) — รองรับ Send/Inbox/Fail"""
         idx = self.combo.currentIndex()
-        
+        # 0=Send, 1=Inbox, 2=Fail (เก็บในตารางส่งพร้อม flag)
+        direction = 'sent' if idx in (0,2) else 'inbox'
         try:
-            if idx == 2:  # ⭐ SMS Fail
-                filename = "sms_sent_log.csv"  # ใช้ไฟล์เดียวกับ sent
-            elif idx == 1:  # SMS Inbox
-                filename = "sms_inbox_log.csv"
-            else:  # SMS Send
-                filename = "sms_sent_log.csv"
-                
-            log_path = get_log_file_path(filename)
+            rows = list_logs(direction=direction, limit=5000, order='DESC')
         except Exception as e:
-            print(f"Error getting log file path: {e}")
-            if idx == 2:
-                filename = "sms_sent_log.csv"
-            elif idx == 1:
-                filename = "sms_inbox_log.csv" 
-            else:
-                filename = "sms_sent_log.csv"
-            log_path = os.path.join("log", filename)
-        
+            print(f"DB error: {e}")
+            self.show_error_message(e)
+            return
+
         self.all_data = []
+        for r in rows:
+            # กรองเฉพาะ Fail เมื่อ idx==2
+            is_failed = bool(r.get('is_failed', 0)) or str(r.get('status') or '').startswith(('ล้มเหลว','ส่งไม่สำเร็จ'))
+            if idx == 2 and not is_failed:
+                continue
 
-        if not os.path.isfile(log_path):
-            self.show_no_file_message()
-            return
+            dt = r.get('dt')
+            date = dt.strftime('%d/%m/%Y') if hasattr(dt,'strftime') else ''
+            time_str = dt.strftime('%H:%M:%S') if hasattr(dt,'strftime') else ''
+            self.all_data.append({
+                'date': date,
+                'time': time_str,
+                'phone': r.get('phone') or '',
+                'message': r.get('message') or '',
+                'datetime': dt,
+                'status': r.get('status') or '',
+                'is_failed': int(is_failed)
+            })
 
-        try:
-            with open(log_path, encoding="utf-8") as f:
-                reader = csv.reader(f, delimiter=',', quotechar='"')
-                next(reader, None)  # ข้าม header
-
-                for i, row in enumerate(reader):
-                    if i > 10000:
-                        break
-
-                    if idx == 1:  # Inbox
-                        if len(row) >= 3:
-                            dt_str, phone, message = row[:3]
-                        else:
-                            continue
-
-                        status = ""
-                        dt_str = dt_str.strip('"')
-
-                        # 🔧 ตัดเครื่องหมายคำพูดรอบนอกของข้อความ ถ้ามี
-                        if isinstance(message, str) and len(message) >= 2 and message[0] == '"' and message[-1] == '"':
-                            message = message[1:-1]
-
-                        # แปลงวันที่สำหรับ inbox
-                        date, time, datetime_obj = self.parse_inbox_datetime(dt_str)
-                    else:  # Send หรือ Fail
-                        dt_str, phone, message, status = (row + ["", "", ""])[:4]
-                        try:
-                            dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-                            date = dt.strftime("%d/%m/%Y")
-                            time = dt.strftime("%H:%M:%S")
-                            datetime_obj = dt
-                        except:
-                            date, time, datetime_obj = dt_str, "", None
-
-                    # เบอร์โทรจาก CSV
-                    raw_phone = phone.strip()
-                    display_phone = raw_phone
-                    
-                    # กรองตามเบอร์ถ้ามี
-                    if self.filter_phone and display_phone != self.filter_phone:
-                        continue
-                    
-                    # ⭐ กรองข้อมูลตามประเภท
-                    if idx == 2:  # SMS Fail - แสดงเฉพาะที่ส่งไม่สำเร็จ
-                        if not self._is_failed_sms(status):
-                            continue
-
-                    self.all_data.append({
-                        'date': date,
-                        'time': time,
-                        'phone': display_phone,
-                        'message': message,
-                        'datetime': datetime_obj,
-                        'status': status
-                    })
-
-        except Exception as e:
-            print(f"Error loading log file: {e}")
-            self.show_error_message(f"ไม่สามารถอ่านไฟล์ได้: {e}")
-            return
-
-        print(f"Loaded {len(self.all_data)} records from {log_path}")
+        # ใช้ฟังก์ชันกรอง/จัดเรียงเดิม
         self.apply_sort_filter()
 
         def show_no_file_message(self):

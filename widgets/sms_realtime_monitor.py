@@ -244,7 +244,7 @@ class SmsRealtimeMonitor(QDialog):
         stats_layout = QHBoxLayout()
         
         self.stats_received = QLabel("Received: 0")
-        self.stats_saved = QLabel("Saved to CSV: 0")
+        self.stats_saved = QLabel("Saved to DB: 0")
         self.stats_errors = QLabel("Errors: 0")
         
         stats_layout.addWidget(self.stats_received)
@@ -450,7 +450,8 @@ class SmsRealtimeMonitor(QDialog):
             self.append_to_display("-" * 50)
             
             # บันทึกลง CSV ด้วยวันที่ปัจจุบัน
-            if self.save_to_csv(sender, message, corrected_datetime):
+            from services.sms_log import log_sms_inbox
+            if log_sms_inbox(sender, message, status="รับเข้า (real-time)"):
                 self.saved_count += 1
                 self.log_updated.emit()
             
@@ -703,7 +704,7 @@ class SmsRealtimeMonitor(QDialog):
     def update_stats(self):
         """อัพเดทสถิติ"""
         self.stats_received.setText(f"Received: {self.received_count}")
-        self.stats_saved.setText(f"Saved to CSV: {self.saved_count}")
+        self.stats_saved.setText(f"Saved to DB: {self.saved_count}")
         self.stats_errors.setText(f"Errors: {self.error_count}")
     
     def show_error(self, message):
@@ -725,7 +726,8 @@ class SmsRealtimeMonitor(QDialog):
             
             self.append_to_display("[TEST] Testing Thai SMS saving...")
             
-            if self.save_to_csv(test_sender, test_message, test_datetime):
+            from services.sms_log import log_sms_inbox
+            if log_sms_inbox(test_sender, test_message, status="รับเข้า (test)"):
                 self.append_to_display("[TEST] Thai SMS saved successfully!")
             else:
                 self.append_to_display("[TEST] Failed to save Thai SMS")
