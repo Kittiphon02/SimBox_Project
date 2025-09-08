@@ -338,6 +338,16 @@ class SmsRealtimeMonitor(QDialog):
     def handle_incoming_data(self, data_line: str):
         """จัดการข้อมูลที่เข้ามา"""
         line = data_line.strip()
+
+        # เพิ่มการตรวจสอบข้อมูลซ้ำ
+        if hasattr(self, '_last_line') and line == self._last_line:
+            return  # ข้ามข้อมูลซ้ำ
+        
+        self._last_line = line
+        
+        if not self.monitoring:
+            return
+    
         if line.startswith('[') and '] ' in line[:12]:
             line = line.split('] ', 1)[1]
 

@@ -1118,6 +1118,11 @@ class SimInfoWindow(QMainWindow):
     # ==================== 6. SMS HANDLING ====================
     def send_sms_main(self):
         """ส่ง SMS จากหน้าหลัก - Updated version"""
+        # เพิ่มการป้องกันคลิกซ้ำ
+        if hasattr(self, '_sms_button_disabled') and self._sms_button_disabled:
+            self.update_at_result_display("[SMS] กำลังส่ง SMS อยู่ กรุณารอสักครู่...")
+            return
+
         phone_number = self.input_phone_main.text().strip()
         message = self.input_sms_main.toPlainText().strip()
         
@@ -1134,14 +1139,19 @@ class SimInfoWindow(QMainWindow):
             self.input_sms_main.setFocus()
             return
         
-        # ⭐ ใช้ SMS handler ที่ปรับปรุงแล้ว
-        if hasattr(self, 'sms_handler'):
-            try:
+        # ⭐ เพิ่มการตั้งแฟลกป้องกันการส่งซ้ำ
+        self._sms_button_disabled = True
+        
+        # เปลี่ยนสถานะปุ่ม (ถ้าต้องการ)
+        original_text = self.btn_send_sms_main.text()
+        self.btn_send_sms_main.setText("กำลังส่ง...")
+        self.btn_send_sms_main.setEnabled(False)
+        
+        try:
+            # ⭐ ใช้ SMS handler ที่ปรับปรุงแล้ว
+            if hasattr(self, 'sms_handler'):
                 success = self.sms_handler.send_sms_main(phone_number, message)
                 if success:
-                    # ⭐ ลบการบันทึก log ออก เพราะ sms_handler จะจัดการให้แล้ว
-                    # log_sms_sent(phone_number, message, "ส่งออก (real-time)")
-
                     # ปล่อยสัญญาณให้ reload log
                     if hasattr(self, 'sms_monitor_dialog') and self.sms_monitor_dialog:
                         self.sms_monitor_dialog.log_updated.emit()
@@ -1158,10 +1168,21 @@ class SimInfoWindow(QMainWindow):
                     self.input_sms_main.clear()
                 # ถ้า success = False จะจัดการใน sms_handler แล้ว
                     
-            except Exception as e:
-                self.update_at_result_display(f"[SMS ERROR] ❌ Exception while sending SMS: {e}")
-        else:
-            self.update_at_result_display("[SMS ERROR] ❌ SMS handler not available")
+            else:
+                self.update_at_result_display("[SMS ERROR] ❌ SMS handler not available")
+                
+        except Exception as e:
+            self.update_at_result_display(f"[SMS ERROR] ❌ Exception while sending SMS: {e}")
+        
+        finally:
+            # ⭐ เพิ่มการรีเซ็ตปุ่มและแฟลกหลังจาก 3 วินาที
+            def reset_sms_button():
+                self._sms_button_disabled = False
+                self.btn_send_sms_main.setText(original_text)
+                self.btn_send_sms_main.setEnabled(True)
+                self.update_at_result_display("[SMS] พร้อมส่งข้อความถัดไป")
+            
+            QTimer.singleShot(3000, reset_sms_button)
 
     def show_loading_dialog(self):
         """แสดง Loading Dialog"""

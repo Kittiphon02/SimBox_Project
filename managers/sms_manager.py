@@ -196,6 +196,9 @@ class SMSHandler:
     def _handle_sms_error(self, phone_number, message, error_msg):
         """จัดการข้อผิดพลาดในการส่ง SMS - ป้องกัน duplicate และ None error"""
         
+        if hasattr(self, '_last_error_msg') and self._last_error_msg == error_msg:
+            return
+    
         # กันซ้ำตามเบอร์+ข้อความ ภายใน 5 วินาที
         key = f"send_fail:{phone_number}:{hash(message)}"
         if not dedupe_event(key, window_seconds=5):
@@ -280,8 +283,8 @@ class SMSHandler:
 
         # กรณีข้อมูล SMS รูปแบบ header|body (จาก serial_service)
         if "|" in line and line.startswith("+CMT:"):
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[SMS PROCESSING] Processing 2-line SMS...")
+            # if hasattr(self.parent, 'update_at_result_display'):
+            #     self.parent.update_at_result_display(f"[SMS PROCESSING] Processing 2-line SMS...")
             try:
                 self._process_cmt_2line_sms(line)
             except Exception as e:
@@ -314,74 +317,45 @@ class SMSHandler:
                     self.parent.update_at_result_display(f"[CMT ERROR] {e}")
 
     def _process_cmt_2line_sms(self, combined_line):
-        """ประมวลผล SMS รูปแบบ +CMT: header|body - Fixed imports and decoding"""
+        """ประมวลผล SMS รูปแบบ +CMT: header|body (แสดงผลแบบสั้นบรรทัดเดียว)"""
+        # แยก header และ body
+        header, body = combined_line.split("|", 1)
+
+        import re
+        m = re.match(r'\+CMT:\s*"([^"]*)","[^"]*","([^"]+)"', header)
+        if not m:
+            return
+
+        sender_raw = m.group(1)         # เช่น "+6665..."
+        datetime_str = m.group(2)       # เช่น "25/09/05,15:43:55+28"
+
+        # ทำเลขให้เป็น 0xxxx…
         try:
-            # แยก header และ body
-            header, body = combined_line.split("|", 1)
-            
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[SMS PARSE] Header: {header}")
-                self.parent.update_at_result_display(f"[SMS PARSE] Body: {body}")
-            
-            # แยกข้อมูลจาก header: +CMT: "+66653988461","","25/08/29,10:15:35+28"
-            import re
-            match = re.match(r'\+CMT: "([^"]*)","([^"]*)","([^"]+)"', header)
-            if not match:
-                if hasattr(self.parent, 'update_at_result_display'):
-                    self.parent.update_at_result_display(f"[CMT ERROR] Invalid header format: {header}")
-                return
-            
-            sender_raw = match.group(1)
-            datetime_str = match.group(3)
-            
-            # Fix: import normalize_phone_number
-            try:
-                from core.utility_functions import normalize_phone_number
-                sender = normalize_phone_number(sender_raw) if sender_raw else "Unknown"
-            except ImportError:
-                # Fallback ถ้า import ไม่ได้
-                sender = sender_raw.replace('+66', '0') if sender_raw.startswith('+66') else sender_raw
-            
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[SMS SENDER] Raw: {sender_raw} -> Normalized: {sender}")
-            
-            # ประมวลผล message (UCS2 hex to Thai text)
-            message = self._decode_message_safely(body)
-            
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[SMS DECODED] From: {sender}")
-                self.parent.update_at_result_display(f"[SMS DECODED] Message: {message}")
-                self.parent.update_at_result_display(f"[SMS DECODED] Time: {datetime_str}")
-            
-            # ตรวจสอบซ้ำ
-            key = (datetime_str, sender, message)
-            if key in self._notified_sms:
-                if hasattr(self.parent, 'update_at_result_display'):
-                    self.parent.update_at_result_display("[SMS DUPLICATE] Skipping duplicate")
-                return
-            self._notified_sms.add(key)
+            from core.utility_functions import normalize_phone_number
+            sender = normalize_phone_number(sender_raw) if sender_raw else "Unknown"
+        except Exception:
+            sender = sender_raw.replace("+66", "0") if sender_raw.startswith("+66") else sender_raw
 
-            # แสดง notification
-            self._show_sms_notification(sender, message, datetime_str)
+        # ถอดรหัสตัวข้อความ (รองรับ UCS2 และข้อความปกติ)
+        message = self._decode_message_safely(body)
 
-            # บันทึกลง log
-            self.parent.update_at_result_display("[SMS SAVE] Attempting to save to log...")
-            success = self._save_sms_to_inbox_log(sender, message, datetime_str)
-            
-            if success:
-                self.parent.update_at_result_display("[SMS SAVE] Successfully saved to log!")
-            else:
-                self.parent.update_at_result_display("[SMS SAVE] Failed to save to log!")
+        # กันซ้ำ
+        key = (datetime_str, sender, message)
+        if key in self._notified_sms:
+            return
+        self._notified_sms.add(key)
 
-            # อัพเดท counter
-            # if hasattr(self.parent, 'on_new_sms_received'):
-            #     self.parent.on_new_sms_received()
-                
-        except Exception as e:
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[CMT 2-LINE ERROR] {e}")
-                import traceback
-                self.parent.update_at_result_display(f"[CMT 2-LINE TRACE] {traceback.format_exc()}")
+        # ตัด timezone ท้าย (เช่น +28) ออกให้ได้รูปแบบ 25/09/05,15:43:55
+        ts = datetime_str.split("+", 1)[0] if "+" in datetime_str else datetime_str
+
+        # ✅ พ่นบรรทัดเดียวเท่านั้น
+        self._resp(f"[SMS INBOX] {ts} | {sender}: {message}")
+
+        # (ถ้าไม่อยากมี popup แจ้งเตือน ให้คอมเมนต์บรรทัดถัดไป)
+        self._show_sms_notification(sender, message, datetime_str)
+
+        # บันทึกลง log (เงียบ ๆ ไม่พ่นข้อความเพิ่ม)
+        self._save_sms_to_inbox_log(sender, message, datetime_str)
 
     def _decode_message_safely(self, body: str) -> str:
         """
@@ -434,75 +408,53 @@ class SMSHandler:
             self.update_at_result_display(f"[TEST ERROR] {e}")
 
     def _process_formatted_sms(self, line):
-        """ประมวลผล SMS ที่มาในรูปแบบ sender_hex|message_hex|timestamp - Fixed phone decode"""
-        # แยก 3 ช่วง: sender_hex | message_hex | timestamp
         sender_hex, message_hex, timestamp = line.split("|", 2)
-        
-        # ✅ แปลง sender จาก UCS2 hex เป็นเบอร์โทรปกติ
+
+        # แปลง sender (ลอง decode UCS2 ถ้าเป็น hex ยาว)
         sender_raw = sender_hex.strip().replace('"', '').replace(' ', '')
-        print(f"🔍 DEBUG SMS: Raw sender hex = '{sender_raw}'")
-        
-        # ลองแปลง sender จาก UCS2 ก่อน
         try:
-            if len(sender_raw) > 10 and all(c in '0123456789ABCDEF' for c in sender_raw.upper()):
-                # เป็น hex string - แปลงเป็นเบอร์โทร
-                sender_decoded = decode_ucs2_to_text(sender_raw)
-                print(f"🔍 DEBUG SMS: Decoded sender = '{sender_decoded}'")
-                
-                # ตรวจสอบว่าเป็นเบอร์โทรหรือไม่
-                if sender_decoded and (sender_decoded.startswith('+') or sender_decoded.isdigit()):
-                    sender = sender_decoded
-                else:
-                    # ถ้าแปลงไม่ได้หรือไม่ใช่เบอร์โทร ใช้ hex เดิม
-                    sender = sender_raw
+            if len(sender_raw) > 10 and all(c in '0123456789ABCDEFabcdef' for c in sender_raw):
+                from core.utility_functions import decode_ucs2_to_text
+                s_dec = decode_ucs2_to_text(sender_raw)
+                sender = s_dec if (s_dec and (s_dec.startswith('+') or s_dec.isdigit())) else sender_raw
             else:
-                # ไม่ใช่ hex หรือสั้นเกินไป - ใช้เดิม
                 sender = sender_raw
-        except Exception as e:
-            print(f"❌ DEBUG SMS: Error decoding sender: {e}")
+        except Exception:
             sender = sender_raw
 
-        print(f"✅ DEBUG SMS: Final sender = '{sender}'")
+        # normalize ไปเป็น 0xxxxxxxxx
+        try:
+            from core.utility_functions import normalize_phone_number
+            sender = normalize_phone_number(sender)
+        except Exception:
+            sender = sender.replace("+66", "0") if sender.startswith("+66") else sender
 
-        # แปลงข้อความ:
-        # ตรวจสอบว่า message_hex น่าจะเป็น UCS2-encoded hex จริงๆ หรือไม่
+        # ถอดรหัสข้อความ
+        import re
         is_hex = bool(re.fullmatch(r'[0-9A-Fa-f]+', message_hex))
-        has_hex_letters = any(c in message_hex for c in "ABCDEFabcdef")
         looks_like_ucs2 = is_hex and len(message_hex) % 4 == 0 and len(message_hex) > 4
-
-        if is_hex and (has_hex_letters or looks_like_ucs2):
-            # น่าจะเป็น UCS2 → decode
+        if is_hex and looks_like_ucs2:
+            from core.utility_functions import decode_ucs2_to_text
             raw_message = decode_ucs2_to_text(message_hex)
         else:
-            # ปกติแล้วเป็น ASCII/text ปกติ
             raw_message = message_hex
-
-        # ตัด null-terminator ถ้ามี (เฉพาะกรณี decode มาจาก UCS2)
         message = raw_message.split("\x00", 1)[0]
 
-        print(f"✅ DEBUG SMS: Final message = '{message}'")
-
-        # ตรวจสอบซ้ำ
+        # กันซ้ำ
         key = (timestamp, sender, message)
         if key in self._notified_sms:
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display("[SMS DUPLICATE] Skipping duplicate")
             return
         self._notified_sms.add(key)
 
-        # แสดง notification
+        # ตัด timezone (+xx) ออก
+        ts = timestamp.split("+", 1)[0] if "+" in timestamp else timestamp
+        self._resp(f"[SMS INBOX] {ts} | {sender}: {message}")
+
+        # (ถ้าไม่อยากมี popup ให้คอมเมนต์บรรทัดนี้)
         self._show_sms_notification(sender, message, timestamp)
 
-        # แสดงใน real-time display
-        if hasattr(self.parent, 'update_at_result_display'):
-            self.parent.update_at_result_display(f"[REAL-TIME SMS] {timestamp} | {sender}: {message}")
-
-        # บันทึกลง log
+        # บันทึกลง log เงียบ ๆ
         self._save_sms_to_inbox_log(sender, message, timestamp)
-
-        # หลัง self._show_sms_notification(...) หรือหลัง update_at_result_display
-        # self.parent.incoming_sms_count += 1
-        # self.parent.lbl_msg_count.setText(f"Messages: {self.parent.incoming_sms_count}")
 
     
     def _process_legacy_cmt(self, header, body):
@@ -531,9 +483,8 @@ class SMSHandler:
             # แสดง notification
             self._show_sms_notification(sender, message, timestamp)
 
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[LEGACY SMS] {timestamp} | {sender}: {message}")
-            
+            self._resp(f"[SMS INBOX] {timestamp} | {sender}: {message}")
+
             self._save_sms_to_inbox_log(sender, message, timestamp)
             
         except Exception as e:
@@ -557,13 +508,13 @@ class SMSHandler:
         try:
             from services.sms_log import log_sms_inbox
 
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[LOG DEBUG] Saving SMS: {sender} -> {message[:30]}...")
+            # if hasattr(self.parent, 'update_at_result_display'):
+            #     self.parent.update_at_result_display(f"[LOG DEBUG] Saving SMS: {sender} -> {message[:30]}...")
 
             success = log_sms_inbox(sender, message, "รับเข้า (real-time)")
             if success:
-                if hasattr(self.parent, 'update_at_result_display'):
-                    self.parent.update_at_result_display(f"[LOG SUCCESS] SMS from {sender} saved to CSV successfully")
+                # if hasattr(self.parent, 'update_at_result_display'):
+                #     self.parent.update_at_result_display(f"[LOG SUCCESS] SMS from {sender} saved to CSV successfully")
                 return True
             else:
                 return self._fallback_save_sms(sender, message, datetime_str)
@@ -577,8 +528,8 @@ class SMSHandler:
         try:
             from services.sms_log import log_sms_inbox
             log_sms_inbox(sender, message, "รับเข้า (fallback)")
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display('[LOG] Fallback saved to DB')
+            # if hasattr(self.parent, 'update_at_result_display'):
+            #     self.parent.update_at_result_display('[LOG] Fallback saved to DB')
             return True
         except Exception as e:
             if hasattr(self.parent, 'update_at_result_display'):

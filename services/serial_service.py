@@ -16,6 +16,7 @@ class SerialMonitorThread(QThread):
     
     def __init__(self, port, baudrate):
         super().__init__()
+        
         self.setTerminationEnabled(True)
         self.port = port
         self.baudrate = baudrate
@@ -109,7 +110,7 @@ class SerialMonitorThread(QThread):
             # ส่งรวมกันไป SMS handler
             formatted_sms = f"{header}|{body}"
             self.new_sms_signal.emit(formatted_sms)
-            self.at_response_signal.emit(f"[SMS BODY] {body}")
+            # self.at_response_signal.emit(f"[SMS BODY] {body}")
             return
         
         # ตรวจสอบ SIM status responses
@@ -180,7 +181,6 @@ class SerialMonitorThread(QThread):
             if any(msg in line for msg in show_messages):
                 self.at_response_signal.emit(f"[RECOVERY] {line}")
                 return True
-            
         return True
     
     def process_recovery_queue(self):

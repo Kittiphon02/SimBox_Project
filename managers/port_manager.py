@@ -185,16 +185,40 @@ class SerialConnectionManager:
         self.parent = parent
     
     def setup_serial_monitor(self, port, baudrate):
-        """ตั้งค่า Serial Monitor Thread - แก้ไขหลัก"""
+        """ตั้งค่า Serial Monitor Thread - แก้ไขป้องกันการส่งซ้ำ"""
         try:
-            # หยุด thread เดิมถ้ามี
+            # หยุดและตัดการเชื่อมต่อ thread เดิมอย่างสมบูรณ์
             if hasattr(self.parent, 'serial_thread') and self.parent.serial_thread:
                 if hasattr(self.parent, 'update_at_result_display'):
                     self.parent.update_at_result_display("[SETUP] Stopping previous serial thread...")
                 
+                # ตัดการเชื่อมต่อ signals ทั้งหมดก่อน
+                try:
+                    old_thread = self.parent.serial_thread
+                    
+                    # ตัดการเชื่อมต่อ signals เดิมทั้งหมด
+                    old_thread.at_response_signal.disconnect()
+                    old_thread.new_sms_signal.disconnect()
+                    old_thread.sim_failure_detected.disconnect()
+                    old_thread.cpin_ready_detected.disconnect()
+                    old_thread.sim_ready_signal.disconnect()
+                    old_thread.cpin_status_signal.disconnect()
+                    
+                    if hasattr(self.parent, 'update_at_result_display'):
+                        self.parent.update_at_result_display("[SETUP] Disconnected all previous signals")
+                        
+                except Exception as e:
+                    # บาง signals อาจไม่ได้เชื่อมต่อ - ไม่เป็นปัญหา
+                    if hasattr(self.parent, 'update_at_result_display'):
+                        self.parent.update_at_result_display(f"[SETUP] Signal disconnect note: {e}")
+                
+                # หยุด thread
                 self.parent.serial_thread.stop()
-                self.parent.serial_thread.wait()
+                self.parent.serial_thread.wait(5000)  # รอสูงสุด 5 วินาที
                 self.parent.serial_thread = None
+                
+                if hasattr(self.parent, 'update_at_result_display'):
+                    self.parent.update_at_result_display("[SETUP] Previous thread stopped successfully")
             
             if not port or port == "Device not found":
                 if hasattr(self.parent, 'update_at_result_display'):
@@ -213,27 +237,42 @@ class SerialConnectionManager:
             from services.serial_service import SerialMonitorThread
             serial_thread = SerialMonitorThread(port, baudrate)
             
-            # เชื่อมต่อ signals
-            if hasattr(self.parent, 'on_new_sms_signal'):
-                serial_thread.new_sms_signal.connect(self.parent.on_new_sms_signal)
-            if hasattr(self.parent, 'update_at_result_display'):
-                serial_thread.at_response_signal.connect(self.parent.update_at_result_display)
+            # เชื่อมต่อ signals ใหม่ด้วย UniqueConnection เพื่อป้องกันการซ้ำ
+            from PyQt5.QtCore import Qt
             
-            # เชื่อมต่อ signals สำหรับ SIM recovery
+            if hasattr(self.parent, 'on_new_sms_signal'):
+                serial_thread.new_sms_signal.connect(
+                    self.parent.on_new_sms_signal, Qt.UniqueConnection
+                )
+            if hasattr(self.parent, 'update_at_result_display'):
+                serial_thread.at_response_signal.connect(
+                    self.parent.update_at_result_display, Qt.UniqueConnection
+                )
+            
+            # เชื่อมต่อ signals สำหรับ SIM recovery ด้วย UniqueConnection
             if hasattr(self.parent, 'on_sim_failure_detected'):
-                serial_thread.sim_failure_detected.connect(self.parent.on_sim_failure_detected)
+                serial_thread.sim_failure_detected.connect(
+                    self.parent.on_sim_failure_detected, Qt.UniqueConnection
+                )
             if hasattr(self.parent, 'on_cpin_ready_detected'):
-                serial_thread.cpin_ready_detected.connect(self.parent.on_cpin_ready_detected)
+                serial_thread.cpin_ready_detected.connect(
+                    self.parent.on_cpin_ready_detected, Qt.UniqueConnection
+                )
             if hasattr(self.parent, 'on_sim_ready_auto'):
-                serial_thread.sim_ready_signal.connect(self.parent.on_sim_ready_auto)
+                serial_thread.sim_ready_signal.connect(
+                    self.parent.on_sim_ready_auto, Qt.UniqueConnection
+                )
             if hasattr(self.parent, 'on_cpin_status_received'):
-                serial_thread.cpin_status_signal.connect(self.parent.on_cpin_status_received)
+                serial_thread.cpin_status_signal.connect(
+                    self.parent.on_cpin_status_received, Qt.UniqueConnection
+                )
             
             # เริ่ม thread
             serial_thread.start()
             
             if hasattr(self.parent, 'update_at_result_display'):
                 self.parent.update_at_result_display(f"[SETUP] ✅ Serial monitor started on {port}")
+                self.parent.update_at_result_display("[SETUP] All signals connected with duplicate protection")
 
             return serial_thread
             
@@ -284,74 +323,99 @@ class SerialConnectionManager:
 
 
 class SimRecoveryManager:
-    """จัดการ SIM recovery"""
-    
     def __init__(self, parent=None):
         self.parent = parent
+        self._recovery_in_progress = False  # เพิ่มการป้องกัน
+        self._last_recovery_time = 0
+        self._min_recovery_interval = 30  # วินาที
     
     def manual_sim_recovery(self):
         """ทำ SIM recovery แบบ manual - แก้ไขหลัก"""
-        # ตรวจสอบ serial connection
-        if not hasattr(self.parent, 'serial_thread') or not self.parent.serial_thread:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                self.parent, 
-                "No Connection", 
-                "❌ No serial connection available!\n\nPlease:\n1. Select correct USB Port\n2. Click 'Refresh Ports' first\n3. Make sure the modem is connected"
-            )
-            return
-        
-        # ตรวจสอบว่า thread ยังทำงานอยู่
-        if not self.parent.serial_thread.isRunning():
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                self.parent, 
-                "Connection Not Active", 
-                "❌ Serial connection is not active!\n\nPlease click 'Refresh Ports' to reconnect."
-            )
-            return
-        
-        # ตรวจสอบ recovery ที่กำลังดำเนินการ
-        if getattr(self.parent, 'sim_recovery_in_progress', False):
-            from PyQt5.QtWidgets import QMessageBox
+        current_time = time.time()
+
+        # ตรวจสอบว่า recovery เพิ่งทำไปหรือไม่
+        if (self._recovery_in_progress or 
+            current_time - self._last_recovery_time < self._min_recovery_interval):
+            
+            remaining = self._min_recovery_interval - (current_time - self._last_recovery_time)
             QMessageBox.information(
-                self.parent, "Recovery in Progress", 
-                "⏳ SIM recovery is already in progress.\n\nPlease wait for the current process to complete..."
+                self.parent, 
+                "Recovery Cooldown", 
+                f"⏳ Please wait {remaining:.0f} seconds before attempting recovery again.\n\n"
+                "This prevents system overload and duplicate processes."
             )
             return
         
-        # ยืนยันการทำ recovery
-        from PyQt5.QtWidgets import QMessageBox
-        reply = QMessageBox.question(
-            self.parent, 
-            'Manual SIM Recovery', 
-            '🔧 Do you want to perform manual SIM recovery?\n\n'
-            'This process will:\n'
-            '• Reset the modem (AT+CFUN=0 → AT+CFUN=1)\n'
-            '• Check SIM status (AT+CPIN?)\n'
-            '• Auto-refresh SIM data if successful\n\n'
-            '⚠️ This may take 10-15 seconds to complete.\n\n'
-            'Proceed with SIM recovery?',
-            QMessageBox.Yes | QMessageBox.No, 
-            QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            # เริ่ม recovery process
-            if hasattr(self.parent, 'sim_recovery_in_progress'):
-                self.parent.sim_recovery_in_progress = True
+        # ตั้งแฟลกป้องกัน
+        self._recovery_in_progress = True
+        self._last_recovery_time = current_time
+
+        try:
+            # ตรวจสอบ serial connection
+            if not hasattr(self.parent, 'serial_thread') or not self.parent.serial_thread:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self.parent, 
+                    "No Connection", 
+                    "❌ No serial connection available!\n\nPlease:\n1. Select correct USB Port\n2. Click 'Refresh Ports' first\n3. Make sure the modem is connected"
+                )
+                return
             
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display("[MANUAL] 🔧 Starting enhanced SIM recovery...")
+            # ตรวจสอบว่า thread ยังทำงานอยู่
+            if not self.parent.serial_thread.isRunning():
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self.parent, 
+                    "Connection Not Active", 
+                    "❌ Serial connection is not active!\n\nPlease click 'Refresh Ports' to reconnect."
+                )
+                return
             
-            # เริ่ม recovery ผ่าน serial thread
-            if hasattr(self.parent.serial_thread, 'force_sim_recovery'):
-                self.parent.serial_thread.force_sim_recovery()
-            else:
-                self._fallback_recovery()
+            # ตรวจสอบ recovery ที่กำลังดำเนินการ
+            if getattr(self.parent, 'sim_recovery_in_progress', False):
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self.parent, "Recovery in Progress", 
+                    "⏳ SIM recovery is already in progress.\n\nPlease wait for the current process to complete..."
+                )
+                return
+            
+            # ยืนยันการทำ recovery
+            from PyQt5.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self.parent, 
+                'Manual SIM Recovery', 
+                '🔧 Do you want to perform manual SIM recovery?\n\n'
+                'This process will:\n'
+                '• Reset the modem (AT+CFUN=0 → AT+CFUN=1)\n'
+                '• Check SIM status (AT+CPIN?)\n'
+                '• Auto-refresh SIM data if successful\n\n'
+                '⚠️ This may take 10-15 seconds to complete.\n\n'
+                'Proceed with SIM recovery?',
+                QMessageBox.Yes | QMessageBox.No, 
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                # เริ่ม recovery process
+                if hasattr(self.parent, 'sim_recovery_in_progress'):
+                    self.parent.sim_recovery_in_progress = True
                 
-            # แสดง progress message
-            self._show_recovery_progress()
+                if hasattr(self.parent, 'update_at_result_display'):
+                    self.parent.update_at_result_display("[MANUAL] 🔧 Starting enhanced SIM recovery...")
+                
+                # เริ่ม recovery ผ่าน serial thread
+                if hasattr(self.parent.serial_thread, 'force_sim_recovery'):
+                    self.parent.serial_thread.force_sim_recovery()
+                else:
+                    self._fallback_recovery()
+                    
+                # แสดง progress message
+                self._show_recovery_progress()
+        
+        finally:
+            # ปลดล็อกหลังจาก 15 วินาที
+            QTimer.singleShot(15000, self._reset_recovery_flag)
     
     def _show_recovery_progress(self):
         """แสดงความคืบหน้าของ recovery"""
@@ -366,6 +430,12 @@ class SimRecoveryManager:
                 "4. ⏳ Refreshing SIM data\n\n"
                 "Please wait 10-15 seconds..."
             )
+
+    def _reset_recovery_flag(self):
+        """รีเซ็ตแฟลก recovery"""
+        self._recovery_in_progress = False
+        if hasattr(self.parent, 'update_at_result_display'):
+            self.parent.update_at_result_display("[RECOVERY] Ready for next recovery attempt")
     
     def _fallback_recovery(self):
         """วิธี recovery สำรอง"""
