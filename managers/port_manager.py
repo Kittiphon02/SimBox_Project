@@ -7,6 +7,7 @@ import serial
 import time
 from core.utility_functions import list_serial_ports
 from services.sim_model import load_sim_data
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 
 
 class PortManager:

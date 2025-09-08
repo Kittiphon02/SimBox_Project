@@ -1754,9 +1754,30 @@ Debug Info:
             return
         
         try:
+            # Generate default filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"Enhanced_Signal_Quality_Data_{timestamp}.csv"
+            default_filename = f"Enhanced_Signal_Quality_Data_{timestamp}.csv"
             
+            # Show file dialog to let user choose save location
+            from PyQt5.QtWidgets import QFileDialog
+            
+            filename, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Signal Quality Data",
+                default_filename,  # Default filename
+                "CSV Files (*.csv);;All Files (*.*)",
+                # options=QFileDialog.DontUseNativeDialog
+            )
+            
+            # If user cancelled the dialog, filename will be empty
+            if not filename:
+                return
+            
+            # Ensure .csv extension if not provided
+            if not filename.lower().endswith('.csv'):
+                filename += '.csv'
+            
+            # Write the data to the selected file
             with open(filename, 'w', newline='', encoding='utf-8') as f:
                 f.write("Row_Number,Timestamp,RSSI_dBm,Quality_Percent,Signal_Bars,RSRP_dBm,RSRQ_dB,BER_Percent,")
                 f.write("Carrier,Network_Type,MCC,MNC,IMSI,ICCID,Country,Home_Network\n")
@@ -1994,8 +2015,6 @@ Debug Info:
             pass
         event.accept()
 
-
-# SignalVisualizationWidget class (same as before)
 class SignalVisualizationWidget(QWidget):
     
     def __init__(self, parent=None):
@@ -2016,6 +2035,7 @@ class SignalVisualizationWidget(QWidget):
         self.update()
         
     def paintEvent(self, event):
+        """Enhanced paintEvent with gray zones for no signal"""
         if not self.measurements:
             return
         
@@ -2028,19 +2048,33 @@ class SignalVisualizationWidget(QWidget):
                           rect.width() - 2*margin, 
                           rect.height() - 2*margin)
         
-        rssi_values = [m.rssi for m in self.measurements if m.rssi > -999]
-        if not rssi_values:
+        # Get valid RSSI values
+        valid_rssi_values = [m.rssi for m in self.measurements if m.rssi > -999]
+        
+        if not valid_rssi_values:
+            # No valid data - show gray background
+            painter.setPen(QColor("#bdc3c7"))
+            painter.setBrush(QColor("#ecf0f1"))
+            painter.drawRect(graph_rect)
+            
+            painter.setPen(QColor("#7f8c8d"))
+            font = QFont("Arial", 12, QFont.Bold)
+            painter.setFont(font)
+            painter.drawText(graph_rect, Qt.AlignCenter, "No Signal Data")
             return
         
-        min_rssi = min(rssi_values)
-        max_rssi = max(rssi_values)
+        # Calculate range from valid values
+        min_rssi = min(valid_rssi_values)
+        max_rssi = max(valid_rssi_values)
         
         if max_rssi == min_rssi:
             max_rssi = min_rssi + 10
         
+        # Draw border
         painter.setPen(QColor("#dc3545"))
         painter.drawRect(graph_rect)
         
+        # Draw Y-axis labels
         painter.setPen(QColor("#000000"))
         font = QFont("Arial", 8)
         painter.setFont(font)
@@ -2049,23 +2083,70 @@ class SignalVisualizationWidget(QWidget):
         painter.drawText(5, margin + graph_rect.height()//2, f"{(max_rssi+min_rssi)/2:.0f}")
         painter.drawText(5, margin + graph_rect.height() - 5, f"{min_rssi:.0f}")
         
-        if len(rssi_values) > 1:
+        # Draw gray zones for no-signal periods
+        self._draw_no_signal_background(painter, graph_rect, min_rssi, max_rssi)
+        
+        # Draw signal lines and points
+        self._draw_signal_data(painter, graph_rect, min_rssi, max_rssi)
+    
+    def _draw_no_signal_background(self, painter, graph_rect, min_rssi, max_rssi):
+        """Draw gray background for no-signal periods"""
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(200, 200, 200, 100))
+        
+        for i, measurement in enumerate(self.measurements):
+            if measurement.rssi <= -999:
+                # Calculate X position for this no-signal point
+                x = graph_rect.left() + (i * graph_rect.width() / max(1, len(self.measurements) - 1))
+                
+                # Draw a narrow gray rectangle
+                gray_rect = QRect(
+                    int(x - 5), 
+                    graph_rect.top(),
+                    10,
+                    graph_rect.height()
+                )
+                painter.drawRect(gray_rect)
+    
+    def _draw_signal_data(self, painter, graph_rect, min_rssi, max_rssi):
+        """Draw signal lines and points"""
+        # Collect valid points
+        valid_points = []
+        for i, measurement in enumerate(self.measurements):
+            if measurement.rssi > -999:
+                x = graph_rect.left() + (i * graph_rect.width() / max(1, len(self.measurements) - 1))
+                y = graph_rect.bottom() - ((measurement.rssi - min_rssi) * graph_rect.height() / (max_rssi - min_rssi))
+                valid_points.append((int(x), int(y), i))
+        
+        # Draw lines between valid points
+        if len(valid_points) > 1:
             painter.setPen(QColor("#dc3545"))
-            painter.setBrush(QColor("#dc3545"))
+            painter.setBrush(Qt.NoBrush)
             
-            points = []
-            for i, measurement in enumerate(self.measurements):
-                if measurement.rssi > -999:
-                    x = graph_rect.left() + (i * graph_rect.width() / max(1, len(self.measurements) - 1))
-                    y = graph_rect.bottom() - ((measurement.rssi - min_rssi) * graph_rect.height() / (max_rssi - min_rssi))
-                    points.append((int(x), int(y)))
-            
-            for i in range(1, len(points)):
-                painter.drawLine(points[i-1][0], points[i-1][1], points[i][0], points[i][1])
-            
-            for point in points:
-                painter.drawEllipse(point[0]-2, point[1]-2, 4, 4)
-
+            for i in range(1, len(valid_points)):
+                prev_x, prev_y, _ = valid_points[i-1]
+                curr_x, curr_y, _ = valid_points[i]
+                painter.drawLine(prev_x, prev_y, curr_x, curr_y)
+        
+        # Draw valid signal points
+        painter.setPen(QColor("#dc3545"))
+        painter.setBrush(QColor("#dc3545"))
+        
+        for x, y, _ in valid_points:
+            painter.drawEllipse(x-2, y-2, 4, 4)
+        
+        # Draw no-signal markers
+        painter.setPen(QColor("#95a5a6"))
+        painter.setBrush(Qt.NoBrush)
+        
+        for i, measurement in enumerate(self.measurements):
+            if measurement.rssi <= -999:
+                x = graph_rect.left() + (i * graph_rect.width() / max(1, len(self.measurements) - 1))
+                y = graph_rect.bottom() - 10
+                
+                # Draw X marker
+                painter.drawLine(int(x-3), int(y-3), int(x+3), int(y+3))
+                painter.drawLine(int(x-3), int(y+3), int(x+3), int(y-3))
 
 class ScrollableSignalGraph(SignalVisualizationWidget):
     pointSelected = pyqtSignal(int, SignalMeasurement)  # ส่ง (global_index, measurement)
@@ -2168,6 +2249,162 @@ class ScrollableSignalGraph(SignalVisualizationWidget):
         self._refresh_view_slice()
         self.update()
 
+    def paintEvent(self, event):
+        """Enhanced paintEvent with gray zones for no signal periods"""
+        if not self.measurements:
+            return
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        rect = self.rect()
+        margin = 40
+        graph_rect = QRect(margin, margin, 
+                          rect.width() - 2*margin, 
+                          rect.height() - 2*margin)
+        
+        # Get valid RSSI values for scaling
+        valid_rssi_values = [m.rssi for m in self.measurements if m.rssi > -999]
+        
+        if not valid_rssi_values:
+            # If no valid values, just show gray background
+            painter.setPen(QColor("#bdc3c7"))
+            painter.setBrush(QColor("#ecf0f1"))
+            painter.drawRect(graph_rect)
+            
+            # Draw "No Signal" text
+            painter.setPen(QColor("#7f8c8d"))
+            font = QFont("Arial", 12, QFont.Bold)
+            painter.setFont(font)
+            painter.drawText(graph_rect, Qt.AlignCenter, "No Signal Data")
+            return
+        
+        # Calculate Y-axis range from valid values only
+        min_rssi = min(valid_rssi_values)
+        max_rssi = max(valid_rssi_values)
+        
+        if max_rssi == min_rssi:
+            max_rssi = min_rssi + 10
+        
+        # Draw graph border
+        painter.setPen(QColor("#dc3545"))
+        painter.drawRect(graph_rect)
+        
+        # Draw Y-axis labels
+        painter.setPen(QColor("#000000"))
+        font = QFont("Arial", 8)
+        painter.setFont(font)
+        
+        painter.drawText(5, margin, f"{max_rssi:.0f}")
+        painter.drawText(5, margin + graph_rect.height()//2, f"{(max_rssi+min_rssi)/2:.0f}")
+        painter.drawText(5, margin + graph_rect.height() - 5, f"{min_rssi:.0f}")
+        
+        # Calculate X positions and Y positions for all points
+        points_data = []
+        for i, measurement in enumerate(self.measurements):
+            x = graph_rect.left() + (i * graph_rect.width() / max(1, len(self.measurements) - 1))
+            
+            if measurement.rssi > -999:
+                # Valid signal - calculate Y position
+                y = graph_rect.bottom() - ((measurement.rssi - min_rssi) * graph_rect.height() / (max_rssi - min_rssi))
+                points_data.append({
+                    'x': x, 'y': y, 'valid': True, 
+                    'rssi': measurement.rssi, 'measurement': measurement
+                })
+            else:
+                # No signal - use special marker
+                points_data.append({
+                    'x': x, 'y': None, 'valid': False, 
+                    'rssi': measurement.rssi, 'measurement': measurement
+                })
+        
+        # Draw gray zones for no-signal periods
+        self._draw_no_signal_zones(painter, graph_rect, points_data)
+        
+        # Draw signal line segments (only for valid points)
+        self._draw_signal_lines(painter, points_data)
+        
+        # Draw points
+        self._draw_signal_points(painter, graph_rect, points_data)
+    
+    def _draw_no_signal_zones(self, painter, graph_rect, points_data):
+        """Draw gray background zones for periods with no signal"""
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(200, 200, 200, 100))  # Light gray with transparency
+        
+        # Find consecutive no-signal periods
+        no_signal_zones = []
+        start_idx = None
+        
+        for i, point in enumerate(points_data):
+            if not point['valid']:
+                if start_idx is None:
+                    start_idx = i
+            else:
+                if start_idx is not None:
+                    # End of no-signal zone
+                    no_signal_zones.append((start_idx, i - 1))
+                    start_idx = None
+        
+        # Handle case where no-signal zone extends to the end
+        if start_idx is not None:
+            no_signal_zones.append((start_idx, len(points_data) - 1))
+        
+        # Draw gray rectangles for each no-signal zone
+        for start_idx, end_idx in no_signal_zones:
+            if start_idx < len(points_data) and end_idx < len(points_data):
+                left_x = points_data[start_idx]['x']
+                right_x = points_data[end_idx]['x']
+                
+                # Extend the zone slightly for better visual coverage
+                zone_width = max(10, right_x - left_x)
+                
+                gray_rect = QRect(
+                    int(left_x - 5), 
+                    graph_rect.top(),
+                    int(zone_width + 10),
+                    graph_rect.height()
+                )
+                painter.drawRect(gray_rect)
+
+    def _draw_signal_lines(self, painter, points_data):
+        """Draw lines connecting valid signal points"""
+        painter.setPen(QColor("#dc3545"))
+        painter.setBrush(Qt.NoBrush)
+        
+        valid_points = [p for p in points_data if p['valid']]
+        
+        if len(valid_points) > 1:
+            for i in range(1, len(valid_points)):
+                prev_point = valid_points[i-1]
+                curr_point = valid_points[i]
+                
+                painter.drawLine(
+                    int(prev_point['x']), int(prev_point['y']),
+                    int(curr_point['x']), int(curr_point['y'])
+                )
+    
+    def _draw_signal_points(self, painter, graph_rect, points_data):
+        """Draw points for signal measurements"""
+        for point in points_data:
+            if point['valid']:
+                # Valid signal point - red circle
+                painter.setPen(QColor("#dc3545"))
+                painter.setBrush(QColor("#dc3545"))
+                painter.drawEllipse(
+                    int(point['x'] - 3), int(point['y'] - 3), 6, 6
+                )
+            else:
+                # No signal point - gray X marker at bottom
+                painter.setPen(QColor("#95a5a6"))
+                painter.setBrush(Qt.NoBrush)
+                
+                x = int(point['x'])
+                y = graph_rect.bottom() - 10
+                
+                # Draw X marker
+                painter.drawLine(x - 4, y - 4, x + 4, y + 4)
+                painter.drawLine(x - 4, y + 4, x + 4, y - 4)
 
 # ==================== INTEGRATION FUNCTIONS ====================
 

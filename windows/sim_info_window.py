@@ -54,7 +54,9 @@ class SimInfoWindow(QMainWindow):
         self.initialize_application()
 
         # self.setup_enhanced_display_separation()
-        self.serial_thread.at_response_signal.connect(self.update_at_result_display)
+        if self.serial_thread and hasattr(self.serial_thread, 'at_response_signal'):
+            self.serial_thread.at_response_signal.connect(self.update_at_result_display)
+        
         self.serial_thread.new_sms_signal.connect(self.sms_handler.process_new_sms_signal)
 
     def setup_enhanced_display_separation(self):
