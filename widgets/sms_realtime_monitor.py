@@ -520,63 +520,99 @@ class SmsRealtimeMonitor(QDialog):
             return text
 
     def _decode_sender_safely(self, sender_ucs2):
-        """แปลง sender UCS2 อย่างปลอดภัย - Enhanced version"""
+        """แปลง sender UCS2 เป็นรูปแบบเบอร์ไทย - เวอร์ชันแก้ไขแล้ว"""
         if not sender_ucs2:
             return "Unknown"
         
         sender_clean = sender_ucs2.strip().replace('"', '').replace(' ', '')
-        print(f"🔍 DEBUG Sender: Input = '{sender_clean}'")
+        print(f"[DEBUG] Input sender UCS2: '{sender_clean}'")
         
         try:
-            # ตรวจสอบว่าเป็น hex string หรือไม่
-            if len(sender_clean) > 10 and all(c in '0123456789ABCDEFabcdef' for c in sender_clean):
-                print(f"🔍 DEBUG Sender: Detected as UCS2 hex")
-                
-                # ลองแปลงจาก UCS2
-                decoded = decode_ucs2(sender_clean)
-                print(f"🔍 DEBUG Sender: UCS2 decoded = '{decoded}'")
-                
-                # ตรวจสอบว่าผลลัพธ์เป็นเบอร์โทรหรือไม่
-                if decoded and decoded != sender_clean:
-                    # ลบตัวอักษรที่ไม่ใช่เบอร์โทร
-                    phone_chars = ''.join(c for c in decoded if c.isdigit() or c in ['+', '-', ' ', '(', ')'])
-                    if phone_chars and (phone_chars.startswith('+') or len(''.join(filter(str.isdigit, phone_chars))) >= 9):
-                        print(f"✅ DEBUG Sender: Valid phone detected = '{phone_chars}'")
-                        return phone_chars
-                
-                # ถ้าแปลงไม่ได้หรือไม่เหมือนเบอร์โทร ลองวิธีอื่น
-                try:
-                    # ลองแปลงแบบ manual (ทีละ 4 hex chars)
-                    manual_decoded = ""
-                    for i in range(0, len(sender_clean), 4):
-                        hex_char = sender_clean[i:i+4]
-                        if len(hex_char) == 4:
-                            try:
-                                char_code = int(hex_char, 16)
-                                if 32 <= char_code <= 126:  # ASCII printable
-                                    manual_decoded += chr(char_code)
-                            except ValueError:
-                                continue
-                    
-                    if manual_decoded:
-                        print(f"✅ DEBUG Sender: Manual decode = '{manual_decoded}'")
-                        return manual_decoded
-                        
-                except Exception as e:
-                    print(f"❌ DEBUG Sender: Manual decode error: {e}")
+            # ใช้ฟังก์ชันใหม่ในการ decode
+            from core.utility_functions import decode_ucs2_phone_number
+            decoded_phone = decode_ucs2_phone_number(sender_clean)
             
-            # ถ้าไม่ใช่ hex หรือแปลงไม่ได้ ตรวจสอบว่าเป็นเบอร์โทรปกติหรือไม่
-            if all(c.isdigit() or c in ['+', '-', ' ', '(', ')'] for c in sender_clean):
-                print(f"✅ DEBUG Sender: Plain phone number = '{sender_clean}'")
+            if decoded_phone and decoded_phone != sender_clean:
+                print(f"[SUCCESS] Decoded phone: '{decoded_phone}'")
+                return decoded_phone
+            else:
+                print(f"[FALLBACK] Using original: '{sender_clean}'")
                 return sender_clean
-            
-            # fallback - ใช้ตัวเดิม
-            print(f"⚠️ DEBUG Sender: Using original = '{sender_clean}'")
-            return sender_clean
                 
         except Exception as e:
-            print(f"❌ DEBUG Sender: Error in decode: {e}")
+            print(f"[ERROR] Sender decode failed: {e}")
             return sender_clean
+        
+    def _decode_message_safely(self, body: str) -> str:
+        """แปลงข้อความ UCS2 - เวอร์ชันปรับปรุง"""
+        try:
+            s = (body or "").strip().strip('"').replace(" ", "")
+            
+            # ตรวจสอบว่าเป็น HEX
+            import re as _re
+            is_hex = bool(_re.fullmatch(r'[0-9A-Fa-f]+', s)) and (len(s) % 2 == 0)
+
+            if is_hex and len(s) >= 4:
+                try:
+                    from core.utility_functions import decode_ucs2_to_text
+                    decoded = decode_ucs2_to_text(s)
+                    return decoded.split("\x00", 1)[0].strip()
+                    
+                except Exception as e:
+                    print(f"[ERROR] Message decode failed: {e}")
+                    # Fallback: UTF-8
+                    try:
+                        return bytes.fromhex(s).decode('utf-8', errors='ignore').strip()
+                    except:
+                        pass
+
+            return s
+        except Exception:
+            return body or ""
+        
+    def decode_ucs2_fixed(hex_str):
+        """แก้ไข decode UCS2 ให้ทำงานถูกต้อง"""
+        if not hex_str:
+            return ""
+        
+        try:
+            # ลบ spaces และตรวจสอบ
+            hex_clean = hex_str.replace(" ", "").upper()
+            
+            # ตรวจสอบว่าเป็น hex ที่ถูกต้อง
+            if len(hex_clean) % 2 != 0:
+                return hex_str  # คืนค่าเดิมถ้า hex ไม่ครบคู่
+            
+            if not all(c in '0123456789ABCDEF' for c in hex_clean):
+                return hex_str  # คืนค่าเดิมถ้าไม่ใช่ hex
+            
+            # แปลงเป็น bytes และ decode
+            try:
+                bytes_data = bytes.fromhex(hex_clean)
+                
+                # ลองใช้ UTF-16BE ก่อน (มาตรฐาน UCS2)
+                for encoding in ['utf-16-be', 'utf-16-le']:
+                    try:
+                        decoded_text = bytes_data.decode(encoding)
+                        # ลบ null characters และ whitespace
+                        cleaned_text = decoded_text.replace('\x00', '').strip()
+                        
+                        if cleaned_text and len(cleaned_text) > 0:
+                            return cleaned_text
+                            
+                    except UnicodeDecodeError:
+                        continue
+                
+                # ถ้า decode ไม่ได้ ให้คืนค่าเดิม
+                return hex_str
+                
+            except ValueError:
+                # hex string ไม่ถูกต้อง
+                return hex_str
+                
+        except Exception as e:
+            print(f"Error in decode_ucs2_fixed: {e}")
+            return hex_str
 
     def update_old_dates_to_current():
         """อัพเดทข้อมูลเก่าวันที่ 25/07/25 ให้เป็น 30/07/2025"""

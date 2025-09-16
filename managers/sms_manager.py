@@ -272,19 +272,13 @@ class SMSHandler:
     def process_new_sms_signal(self, data_line):
         """จัดการสัญญาณ SMS ใหม่ - Fixed 2-line SMS processing"""
         line = data_line.strip()
-        
-        self._mon(f"[SMS DEBUG] Received signal: {line}")
 
         # กรณี CMTI (SMS เก็บในหน่วยความจำ)
         if line.startswith("+CMTI:"):
-            if hasattr(self.parent, 'update_at_result_display'):
-                self.parent.update_at_result_display(f"[SMS NOTIFICATION] {line}")
             return
 
         # กรณีข้อมูล SMS รูปแบบ header|body (จาก serial_service)
         if "|" in line and line.startswith("+CMT:"):
-            # if hasattr(self.parent, 'update_at_result_display'):
-            #     self.parent.update_at_result_display(f"[SMS PROCESSING] Processing 2-line SMS...")
             try:
                 self._process_cmt_2line_sms(line)
             except Exception as e:
@@ -331,8 +325,8 @@ class SMSHandler:
 
         # ทำเลขให้เป็น 0xxxx…
         try:
-            from core.utility_functions import normalize_phone_number
-            sender = normalize_phone_number(sender_raw) if sender_raw else "Unknown"
+            from core.utility_functions import decode_ucs2_phone_number
+            sender = decode_ucs2_phone_number(sender_raw) if sender_raw else "Unknown"
         except Exception:
             sender = sender_raw.replace("+66", "0") if sender_raw.startswith("+66") else sender_raw
 
@@ -365,17 +359,19 @@ class SMSHandler:
         """
         try:
             s = (body or "").strip().strip('"').replace(" ", "")
+            
             # เดาว่าเป็น HEX ไหม (ตัวอักษร 0-9A-F ทั้งหมด และความยาวต้องเป็นเลขคู่)
             import re as _re
             is_hex = bool(_re.fullmatch(r'[0-9A-Fa-f]+', s)) and (len(s) % 2 == 0)
 
             if is_hex:
-                # ลองใช้ util ที่มีในโปรเจกต์ก่อน
+                # ลองใช้ utility function ที่ปรับปรุงแล้ว
                 try:
+                    from core.utility_functions import decode_ucs2_to_text
                     text = decode_ucs2_to_text(s)
                     return text.split("\x00", 1)[0]
                 except Exception:
-                    # เผื่อ util ล้มเหลว ใช้วิธีมาตรฐาน (UTF-16BE)
+                    # เผื่อ utility ล้มเหลว ใช้วิธีมาตรฐาน (UTF-16BE)
                     try:
                         return bytes.fromhex(s).decode('utf-16-be', errors='ignore').split("\x00", 1)[0]
                     except Exception:
@@ -413,21 +409,10 @@ class SMSHandler:
         # แปลง sender (ลอง decode UCS2 ถ้าเป็น hex ยาว)
         sender_raw = sender_hex.strip().replace('"', '').replace(' ', '')
         try:
-            if len(sender_raw) > 10 and all(c in '0123456789ABCDEFabcdef' for c in sender_raw):
-                from core.utility_functions import decode_ucs2_to_text
-                s_dec = decode_ucs2_to_text(sender_raw)
-                sender = s_dec if (s_dec and (s_dec.startswith('+') or s_dec.isdigit())) else sender_raw
-            else:
-                sender = sender_raw
+            from core.utility_functions import decode_ucs2_phone_number
+            sender = decode_ucs2_phone_number(sender_raw)
         except Exception:
-            sender = sender_raw
-
-        # normalize ไปเป็น 0xxxxxxxxx
-        try:
-            from core.utility_functions import normalize_phone_number
-            sender = normalize_phone_number(sender)
-        except Exception:
-            sender = sender.replace("+66", "0") if sender.startswith("+66") else sender
+            sender = sender_raw.replace("+66", "0") if sender_raw.startswith("+66") else sender_raw
 
         # ถอดรหัสข้อความ
         import re
@@ -470,8 +455,8 @@ class SMSHandler:
             sender_hex = match.group(1)
             timestamp = match.group(2)
             
-            # แปลง UCS2
-            sender = decode_ucs2_to_text(sender_hex)
+            from core.utility_functions import decode_ucs2_phone_number
+            sender = decode_ucs2_phone_number(sender_hex)
             message = decode_ucs2_to_text(body)
             
             # ตรวจสอบซ้ำ

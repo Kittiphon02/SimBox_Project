@@ -1051,7 +1051,6 @@ class SimInfoWindow(QMainWindow):
         """ส่งคำสั่ง AT จากหน้าหลัก - แก้ไขหลัก"""
         # ตรวจสอบการเชื่อมต่อ serial
         if not hasattr(self, 'serial_thread') or not self.serial_thread:
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(
                 self, 
                 "No Connection", 
@@ -1065,7 +1064,6 @@ class SimInfoWindow(QMainWindow):
         
         # ตรวจสอบว่า thread ยังทำงานอยู่
         if not self.serial_thread.isRunning():
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(
                 self, 
                 "Connection Lost", 
@@ -1077,7 +1075,6 @@ class SimInfoWindow(QMainWindow):
         # ดึงคำสั่ง AT
         cmd = self.at_combo_main.currentText().strip()
         if not cmd:
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Empty Command", "📵 Please enter an AT command")
             return
         
@@ -1118,74 +1115,68 @@ class SimInfoWindow(QMainWindow):
 
     # ==================== 6. SMS HANDLING ====================
     def send_sms_main(self):
-        """ส่ง SMS จากหน้าหลัก - Updated version"""
-        # เพิ่มการป้องกันคลิกซ้ำ
-        if hasattr(self, '_sms_button_disabled') and self._sms_button_disabled:
+        """ส่ง SMS จากหน้าหลัก (ไม่ใช้ animation)"""
+        # ป้องกันคลิกซ้ำ
+        if getattr(self, '_sms_button_disabled', False):
             self.update_at_result_display("[SMS] กำลังส่ง SMS อยู่ กรุณารอสักครู่...")
             return
 
         phone_number = self.input_phone_main.text().strip()
         message = self.input_sms_main.toPlainText().strip()
-        
+
         # ตรวจสอบข้อมูลที่ป้อน
         if not phone_number:
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Missing Phone Number", "📵 Please enter a phone number")
             self.input_phone_main.setFocus()
             return
-            
+
         if not message:
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Missing Message", "📵 Please enter a message to send")
             self.input_sms_main.setFocus()
             return
-        
-        # ⭐ เพิ่มการตั้งแฟลกป้องกันการส่งซ้ำ
+
+        # ตั้งแฟลก & เปลี่ยนปุ่ม
         self._sms_button_disabled = True
-        
-        # เปลี่ยนสถานะปุ่ม (ถ้าต้องการ)
         original_text = self.btn_send_sms_main.text()
         self.btn_send_sms_main.setText("กำลังส่ง...")
         self.btn_send_sms_main.setEnabled(False)
-        
+
         try:
-            # ⭐ ใช้ SMS handler ที่ปรับปรุงแล้ว
-            if hasattr(self, 'sms_handler'):
+            if hasattr(self, 'sms_handler') and self.sms_handler:
+                # หมายเหตุ: sms_handler.send_sms_main() ภายในจะเรียก self.show_loading_dialog() ให้เองแล้ว
+                # จึงไม่ต้องเปิด loading ซ้ำที่นี่
                 success = self.sms_handler.send_sms_main(phone_number, message)
-                if success:
-                    # ปล่อยสัญญาณให้ reload log
-                    if hasattr(self, 'sms_monitor_dialog') and self.sms_monitor_dialog:
-                        self.sms_monitor_dialog.log_updated.emit()
 
-                    # ถ้ามีหน้าต่าง SMS Log เปิดอยู่ ให้รีโหลดทันที
-                    mon = getattr(self, 'sms_monitor_dialog', None)
-                    if mon:
+                # อัปเดต log dialog/monitor ถ้ามี
+                mon = getattr(self, 'sms_monitor_dialog', None)
+                if mon:
+                    try:
                         mon.log_updated.emit()
+                    except Exception:
+                        pass
 
+                if success:
                     self.update_at_result_display(f"[SMS] ✅ SMS sent successfully to {phone_number}")
-                    self.show_sms_success_anim()
-
-                    # ล้างฟอร์มหลังส่งสำเร็จ
+                    # ล้างฟอร์ม
                     self.input_phone_main.clear()
                     self.input_sms_main.clear()
-                # ถ้า success = False จะจัดการใน sms_handler แล้ว
-                    
+                else:
+                    # ข้อผิดพลาดและการแจ้งเตือนรายละเอียดถูกจัดการใน sms_handler แล้ว
+                    self.update_at_result_display("[SMS ERROR] ❌ Send failed")
             else:
                 self.update_at_result_display("[SMS ERROR] ❌ SMS handler not available")
-                self.show_sms_fail_anim()
 
         except Exception as e:
             self.update_at_result_display(f"[SMS ERROR] ❌ Exception while sending SMS: {e}")
-            self.show_sms_fail_anim()
 
         finally:
-            # ⭐ เพิ่มการรีเซ็ตปุ่มและแฟลกหลังจาก 3 วินาที
+            # รีเซ็ตปุ่มหลัง 3 วินาที
             def reset_sms_button():
                 self._sms_button_disabled = False
                 self.btn_send_sms_main.setText(original_text)
                 self.btn_send_sms_main.setEnabled(True)
                 self.update_at_result_display("[SMS] พร้อมส่งข้อความถัดไป")
-            
+
             QTimer.singleShot(3000, reset_sms_button)
 
     def show_loading_dialog(self):
@@ -1207,19 +1198,21 @@ class SimInfoWindow(QMainWindow):
             dlg.show()
             
         except Exception as e:
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Cannot open Failed SMS dialog: {e}")
 
     def on_sms_sending_finished(self, success: bool):
         if success:
-            # แสดง success ก่อน แล้วค่อยปิดโหลดใน 2 วินาที (อยู่หลังแอนิเมชัน ~1.4s)
-            self.show_sms_success_anim()
-            QTimer.singleShot(2000, self.dialog_manager.close_loading_dialog)
-            self.input_phone_main.clear()
-            self.input_sms_main.clear()
+            self.update_at_result_display("[SMS] ✅ Completed")
+            # ปิด dialog โหลด (ถ้าเปิดอยู่)
+            if getattr(self, 'dialog_manager', None) and hasattr(self.dialog_manager, 'close_loading_dialog'):
+                QTimer.singleShot(500, self.dialog_manager.close_loading_dialog)
+            # ล้างฟอร์ม
+            if hasattr(self, 'input_phone_main'): self.input_phone_main.clear()
+            if hasattr(self, 'input_sms_main'): self.input_sms_main.clear()
         else:
-            self.show_sms_fail_anim()
-            QTimer.singleShot(3000, self.dialog_manager.close_loading_dialog)
+            self.update_at_result_display("[SMS ERROR] ❌ Failed")
+            if getattr(self, 'dialog_manager', None) and hasattr(self.dialog_manager, 'close_loading_dialog'):
+                QTimer.singleShot(1500, self.dialog_manager.close_loading_dialog)
 
     def on_new_sms_signal(self, data_line):
         """จัดการสัญญาณ SMS ใหม่"""

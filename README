@@ -1,0 +1,13 @@
+## คำสั่งสำหรับสร้างไฟล์ .exe โดย Folder จะถูกเก็บไว้ใน dist
+python -m PyInstaller --noconsole --name ตั้งชื่อที่ต้องการ ^
+  --add-data "windows\config;windows\config" ^
+  main.py
+
+## ข้อมูลของไฟล์ db.json
+{
+  "host": "192.168.56.1",
+  "port": 3306,
+  "user": "simapp",
+  "password": "StrongPass!",
+  "database": "sim_logs"
+}

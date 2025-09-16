@@ -123,41 +123,156 @@ def encode_text_to_ucs2(text):
         print(f"Error encoding to UCS2: {e}")
         return ""
 
-
 def decode_ucs2_to_text(hex_str):
-    """แปลง UCS2 hex string เป็นข้อความ
+    """
+    แปลงข้อความจาก UCS2 hex format - เวอร์ชันปรับปรุง
+    
     Args:
-        hex_str (str): UCS2 hex string     
+        hex_str: UCS2 hex string
+    
     Returns:
         str: ข้อความที่แปลงแล้ว
     """
     if not hex_str:
         return ""
-        
+    
     try:
-        hex_str = hex_str.replace(" ", "")
+        # ทำความสะอาด hex string
+        hex_clean = hex_str.replace(" ", "").strip().strip('"')
         
-        if len(hex_str) % 2 != 0:
-            hex_str = hex_str.ljust((len(hex_str) + 3) // 4 * 4, '0')
+        # ตรวจสอบว่าเป็น hex ที่ถูกต้อง
+        if len(hex_clean) % 2 != 0:
+            return hex_str
         
-        # แปลงเป็น bytes และ decode
-        bytes_data = bytes.fromhex(hex_str)
+        if not all(c in '0123456789ABCDEFabcdef' for c in hex_clean):
+            return hex_str
         
-       # decode ด้วย UCS2 (utf-16-BE) ก่อน ถ้า fail ค่อยลอง LE
-        for encoding in ('utf-16-be', 'utf-16-le'):
-            try:
-                # ลบ null-char ท้ายด้วย
-                return bytes_data.decode(encoding).rstrip('\x00')
-            except Exception:
-                continue
+        # วิธี 1: แปลง UCS2 ทีละ 4 ตัวอักษร (สำหรับ Unicode)
+        if len(hex_clean) % 4 == 0:
+            text = ""
+            for i in range(0, len(hex_clean), 4):
+                hex_chunk = hex_clean[i:i+4]
+                try:
+                    char_code = int(hex_chunk, 16)
+                    if char_code > 0 and char_code < 65536:
+                        text += chr(char_code)
+                except:
+                    continue
+            
+            if text:
+                return text.replace('\x00', '').strip()
         
-        # fallback: ทนๆ decode BE แล้ว replace ตัว decode ไม่ได้
-        return bytes_data.decode('utf-16-be', errors='replace').rstrip('\x00')
-         
-    except Exception as e:
-        print(f"Error decoding UCS2: {e}")
+        # วิธี 2: ใช้ UTF-16BE
+        try:
+            bytes_data = bytes.fromhex(hex_clean)
+            decoded = bytes_data.decode('utf-16-be', errors='ignore')
+            return decoded.replace('\x00', '').strip()
+        except:
+            pass
+        
+        # วิธี 3: ใช้ UTF-8 (สำหรับข้อความธรรมดา)
+        try:
+            bytes_data = bytes.fromhex(hex_clean)
+            decoded = bytes_data.decode('utf-8', errors='ignore')
+            return decoded.strip()
+        except:
+            pass
+        
         return hex_str
-
+        
+    except Exception as e:
+        print(f"[ERROR] UCS2 text decode failed: {e}")
+        return hex_str
+    
+def decode_ucs2_phone_number(hex_str):
+    """
+    แปลงหมายเลขโทรศัพท์จาก UCS2 hex format และแปลงเป็นรูปแบบไทย (0xxxxxxxxx)
+    
+    Args:
+        hex_str: UCS2 hex string เช่น "002B00360036003600350033003900380038003400360031"
+    
+    Returns:
+        str: หมายเลขโทรศัพท์รูปแบบไทย เช่น "0653988461"
+    """
+    if not hex_str:
+        return "Unknown"
+    
+    # ทำความสะอาด hex string
+    hex_clean = hex_str.replace(" ", "").strip().strip('"')
+    
+    try:
+        # ตรวจสอบว่าเป็น hex ที่ถูกต้อง
+        if len(hex_clean) % 4 != 0:
+            return hex_str
+        
+        if not all(c in '0123456789ABCDEFabcdef' for c in hex_clean):
+            return hex_str
+        
+        # แปลง UCS2 ทีละ 4 ตัวอักษร (2 bytes)
+        phone_number = ""
+        for i in range(0, len(hex_clean), 4):
+            hex_chunk = hex_clean[i:i+4]
+            if len(hex_chunk) == 4:
+                try:
+                    char_code = int(hex_chunk, 16)
+                    if char_code > 0 and char_code < 65536:
+                        character = chr(char_code)
+                        phone_number += character
+                except (ValueError, OverflowError):
+                    continue
+        
+        if phone_number and len(phone_number) > 5:
+            # แปลงเป็นรูปแบบไทย
+            return normalize_phone_number(phone_number.strip())
+        
+        # Fallback: ใช้ UTF-16BE
+        try:
+            bytes_data = bytes.fromhex(hex_clean)
+            utf16_decoded = bytes_data.decode('utf-16-be', errors='ignore')
+            cleaned = utf16_decoded.replace('\x00', '').strip()
+            
+            if cleaned and len(cleaned) > 5:
+                return normalize_phone_number(cleaned)
+        except:
+            pass
+        
+        return hex_str
+        
+    except Exception as e:
+        print(f"[ERROR] UCS2 phone decode failed: {e}")
+        return hex_str
+    
+def normalize_phone_number(phone_str):
+    """
+    แปลงหมายเลขโทรศัพท์เป็นรูปแบบไทย (0xxxxxxxxx)
+    
+    Args:
+        phone_str: หมายเลขโทรในรูปแบบต่างๆ เช่น "+66653988461", "66653988461", "0653988461"
+    
+    Returns:
+        str: หมายเลขโทรรูปแบบไทย เช่น "0653988461"
+    """
+    if not phone_str or not isinstance(phone_str, str):
+        return phone_str
+    
+    # ลบช่องว่างและตัวอักษรพิเศษ
+    clean_phone = phone_str.strip().replace(" ", "").replace("-", "")
+    
+    # กรณี +66xxxxxxxxx -> 0xxxxxxxxx
+    if clean_phone.startswith("+66"):
+        return "0" + clean_phone[3:]
+    
+    # กรณี 66xxxxxxxxx -> 0xxxxxxxxx
+    elif clean_phone.startswith("66") and len(clean_phone) == 11:
+        return "0" + clean_phone[2:]
+    
+    # กรณี 0xxxxxxxxx (ถูกต้องแล้ว)
+    elif clean_phone.startswith("0") and len(clean_phone) == 10:
+        return clean_phone
+    
+    # กรณีอื่นๆ คืนค่าเดิม
+    else:
+        return phone_str
 
 def get_carrier_from_imsi(imsi):
     """ระบุผู้ให้บริการจาก IMSI

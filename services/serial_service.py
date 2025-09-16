@@ -97,7 +97,7 @@ class SerialMonitorThread(QThread):
         
         if line.startswith("+CMT:"):
             self.cmt_buffer = line
-            self.at_response_signal.emit(line)
+            # self.at_response_signal.emit(line)
             return
         
         elif self.cmt_buffer:
