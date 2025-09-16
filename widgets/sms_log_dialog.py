@@ -62,6 +62,11 @@ class SmsLogDialog(QDialog):
         # เชื่อมต่อ double click event
         self.table.cellDoubleClicked.connect(self.handle_row_double_clicked)
 
+        self._poll = QTimer(self)
+        self._poll.setInterval(2000)
+        self._poll.timeout.connect(self.load_log)
+        self._poll.start()
+
     # ==================== 2. UI SETUP ====================
     def setup_simplified_ui(self):
         """ตั้งค่า UI แบบง่าย เหลือแค่การเลือกรายการล่าสุดหรือเก่ากว่า - Enhanced version"""

@@ -95,12 +95,11 @@ class SerialMonitorThread(QThread):
             self.at_response_signal.emit(line)
             return
         
-        # ตรวจสอบ CMT (SMS content) - 2 line format
         if line.startswith("+CMT:"):
-            # เก็บ header ไว้ใน buffer รอบรรทัดถัดไป
             self.cmt_buffer = line
             self.at_response_signal.emit(line)
             return
+        
         elif self.cmt_buffer:
             # บรรทัดนี้คือข้อความ SMS
             header = self.cmt_buffer

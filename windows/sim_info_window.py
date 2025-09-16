@@ -2,9 +2,9 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QVBoxLayout, QWidget, QHBoxLayout, QLineEdit,
     QPushButton, QLabel, QComboBox, QGroupBox, QSizePolicy, QMessageBox,
-    QSpacerItem, QTextEdit, QShortcut
+    QSpacerItem, QTextEdit, QShortcut, QDialog
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QUrl
 from PyQt5.QtGui import QFont, QKeySequence
 
 # core, managers, services, widgets, styles
@@ -20,14 +20,14 @@ from styles import MainWindowStyles
 from windows.at_command_helper import ATCommandHelper
 from services.sms_log import log_sms_sent
 from widgets.sms_log_dialog import SmsLogDialog
-# from windows.sim_signal_quality_window import show_sim_signal_quality_window
 from windows.enhanced_sim_signal_quality_window import show_enhanced_sim_signal_quality_window
 from managers.smart_command_manager import SmartCommandManager
 from datetime import datetime
-from PyQt5.QtWidgets import QFrame
 import types
 from collections import deque
 from time import monotonic
+from widgets.loading_widget import LoadingWidget
+from pathlib import Path
 
 class SimInfoWindow(QMainWindow):
     """หน้าต่างหลักของโปรแกรม SIM Management System"""
@@ -55,9 +55,8 @@ class SimInfoWindow(QMainWindow):
 
         # self.setup_enhanced_display_separation()
         if self.serial_thread and hasattr(self.serial_thread, 'at_response_signal'):
-            self.serial_thread.at_response_signal.connect(self.update_at_result_display)
-        
-        self.serial_thread.new_sms_signal.connect(self.sms_handler.process_new_sms_signal)
+            # self.serial_thread.at_response_signal.connect(self.update_at_result_display)
+            self.serial_thread.new_sms_signal.connect(self.sms_handler.process_new_sms_signal)
 
     def setup_enhanced_display_separation(self):
         """ตั้งค่าระบบแยกการแสดงผลแบบ Enhanced"""
@@ -1164,7 +1163,8 @@ class SimInfoWindow(QMainWindow):
                         mon.log_updated.emit()
 
                     self.update_at_result_display(f"[SMS] ✅ SMS sent successfully to {phone_number}")
-                    
+                    self.show_sms_success_anim()
+
                     # ล้างฟอร์มหลังส่งสำเร็จ
                     self.input_phone_main.clear()
                     self.input_sms_main.clear()
@@ -1172,10 +1172,12 @@ class SimInfoWindow(QMainWindow):
                     
             else:
                 self.update_at_result_display("[SMS ERROR] ❌ SMS handler not available")
-                
+                self.show_sms_fail_anim()
+
         except Exception as e:
             self.update_at_result_display(f"[SMS ERROR] ❌ Exception while sending SMS: {e}")
-        
+            self.show_sms_fail_anim()
+
         finally:
             # ⭐ เพิ่มการรีเซ็ตปุ่มและแฟลกหลังจาก 3 วินาที
             def reset_sms_button():
@@ -1208,14 +1210,15 @@ class SimInfoWindow(QMainWindow):
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Cannot open Failed SMS dialog: {e}")
 
-
-    def on_sms_sending_finished(self, success):
-        """เมื่อส่ง SMS เสร็จ"""
+    def on_sms_sending_finished(self, success: bool):
         if success:
+            # แสดง success ก่อน แล้วค่อยปิดโหลดใน 2 วินาที (อยู่หลังแอนิเมชัน ~1.4s)
+            self.show_sms_success_anim()
             QTimer.singleShot(2000, self.dialog_manager.close_loading_dialog)
             self.input_phone_main.clear()
             self.input_sms_main.clear()
         else:
+            self.show_sms_fail_anim()
             QTimer.singleShot(3000, self.dialog_manager.close_loading_dialog)
 
     def on_new_sms_signal(self, data_line):
@@ -1932,255 +1935,3 @@ class EnhancedResponseDisplayManager:
     def register_manual_command(self, command):
         """บันทึก manual command ที่ user ส่ง"""
         self.filter_manager.register_manual_command(command)
-
-# ===== 2. ปรับปรุง SimInfoWindow class =====
-
-# เพิ่มในส่วน __init__ ของ SimInfoWindow
-def init_display_separation(self):
-    """เริ่มต้นระบบแยกการแสดงผล"""
-    # เพิ่ม Display Manager
-    self.display_manager = EnhancedResponseDisplayManager(self)
-    self.display_separation_active = True  # เริ่มต้นเปิดใช้งาน
-    
-    print("✅ Display separation initialized")
-
-# เพิ่มในส่วน setup_serial_monitor ของ SimInfoWindow
-def setup_serial_monitor_with_separation(self):
-    """ตั้งค่า Serial Monitor พร้อมระบบแยกการแสดงผล"""
-    port = self.port_combo.currentData()
-    baudrate = int(self.baud_combo.currentText())
-
-    self.serial_thread = self.serial_connection_manager.setup_serial_monitor(port, baudrate)
-
-    if self.serial_thread:
-        # 🔴 1) ตัดการเชื่อมต่อเดิมที่ส่งเข้า Response ตรง ๆ
-        try:
-            self.serial_thread.at_response_signal.disconnect(self.update_at_result_display)
-        except Exception:
-            # ถ้าเชื่อมด้วย slot อื่นไว้ (เช่น lambda ภายใน SerialConnectionManager)
-            # จะ disconnect แบบระบุ slot ไม่ได้ ก็ปล่อยผ่านได้
-            pass
-
-        # 🟢 2) ต่อใหม่เข้าตัวกรองเท่านั้น
-        self.serial_thread.at_response_signal.connect(self.on_filtered_response)
-
-        self._cmt_buffer = None
-        self._is_sending_sms = False
-        self.auto_open_sms_monitor()
-
-def on_filtered_response(self, response):
-    """ประมวลผล response ผ่าน Display Manager"""
-    if hasattr(self, 'display_separation_active') and self.display_separation_active:
-        self.display_manager.process_response(response)
-    else:
-        # แสดงแบบเดิม
-        self.update_at_result_display(response)
-
-# ปรับปรุง send_at_command_main
-def send_at_command_main_with_separation(self):
-    """ส่ง AT command พร้อมบันทึก manual command"""
-    # ตรวจสอบการเชื่อมต่อ serial
-    if not hasattr(self, 'serial_thread') or not self.serial_thread:
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.warning(
-            self, 
-            "No Connection", 
-            "❌ No serial connection found!\n\n"
-            "Please:\n"
-            "1. Select correct USB Port\n"
-            "2. Click 'Refresh Ports'\n"
-            "3. Make sure the modem is connected"
-        )
-        return
-    
-    # ตรวจสอบว่า thread ยังทำงานอยู่
-    if not self.serial_thread.isRunning():
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.warning(
-            self, 
-            "Connection Lost", 
-            "❌ Serial connection is not active!\n\n"
-            "Please click 'Refresh Ports' to reconnect."
-        )
-        return
-    
-    # ดึงคำสั่ง AT
-    cmd = self.at_combo_main.currentText().strip()
-    if not cmd:
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.warning(self, "Empty Command", "📵 Please enter an AT command")
-        return
-    
-    # 🔥 บันทึกว่าเป็น manual command
-    if hasattr(self, 'display_manager'):
-        self.display_manager.register_manual_command(cmd)
-    
-    # ตรวจจับคำสั่งพิเศษ
-    if cmd.upper() == "AT+RUN":
-        self.special_command_handler.handle_at_run_command()
-        self.update_at_command_display(cmd)
-        return
-    elif cmd.upper() == "AT+STOP":
-        self.special_command_handler.handle_at_stop_command()
-        self.update_at_command_display(cmd)
-        return
-    elif cmd.upper() == "AT+CLEAR":
-        self.special_command_handler.handle_at_clear_command()
-        self.update_at_command_display(cmd)
-        return
-    
-    # ล้างหน้าจอผลลัพธ์
-    self.clear_at_displays()
-    
-    # เพิ่มคำสั่งลงประวัติ
-    self.at_command_manager.add_command_to_history(self.at_combo_main, cmd)
-    
-    # แสดงคำสั่งที่ส่ง
-    self.update_at_command_display(cmd)
-    
-    # ส่งคำสั่งผ่าน serial thread
-    try:
-        success = self.serial_thread.send_command(cmd)
-        if not success:
-            self.update_at_result_display("[ERROR] ❌ Failed to send command - serial connection issue")
-    except Exception as e:
-        self.update_at_result_display(f"[ERROR] ❌ Exception while sending command: {e}")
-
-# ปรับปรุง send_sms_main
-def send_sms_main_with_separation(self):
-    """ส่ง SMS พร้อมบันทึก SMS command"""
-    phone_number = self.input_phone_main.text().strip()
-    message = self.input_sms_main.toPlainText().strip()
-    
-    # ตรวจสอบข้อมูลที่ป้อน
-    if not phone_number:
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.warning(self, "Missing Phone Number", "📵 Please enter a phone number")
-        self.input_phone_main.setFocus()
-        return
-        
-    if not message:
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.warning(self, "Missing Message", "📵 Please enter a message to send")
-        self.input_sms_main.setFocus()
-        return
-    
-    # 🔥 บันทึกว่าจะมี SMS command
-    if hasattr(self, 'display_manager'):
-        self.display_manager.register_manual_command(f'AT+CMGS="{phone_number}"')
-    
-    # เรียก SMS handler เดิม
-    if hasattr(self, 'sms_handler'):
-        try:
-            success = self.sms_handler.send_sms_main(phone_number, message)
-            if success:
-                self.update_at_result_display(f"[SMS] ✅ SMS sent successfully to {phone_number}")
-                
-                # ล้างฟอร์มหลังส่งสำเร็จ
-                self.input_phone_main.clear()
-                self.input_sms_main.clear()
-                    
-        except Exception as e:
-            self.update_at_result_display(f"[SMS ERROR] ❌ Exception while sending SMS: {e}")
-    else:
-        self.update_at_result_display("[SMS ERROR] ❌ SMS handler not available")
-
-# ===== 3. เพิ่ม Display Stats Widget =====
-
-def toggle_display_separation(self, checked):
-    """เปิด/ปิด การแยกการแสดงผล"""
-    self.display_separation_active = checked
-    
-    if checked:
-        self.btn_toggle_separation.setText("🎯 ON")
-        self.btn_toggle_separation.setStyleSheet("""
-            QPushButton {
-                background-color: #27ae60;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 10px;
-                font-weight: bold;
-            }
-        """)
-        print("✅ Display separation enabled")
-    else:
-        self.btn_toggle_separation.setText("🎯 OFF")  
-        self.btn_toggle_separation.setStyleSheet("""
-            QPushButton {
-                background-color: #e74c3c;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 10px;
-                font-weight: bold;
-            }
-        """)
-        print("❌ Display separation disabled")
-
-# ===== 4. Integration Functions =====
-
-def integrate_display_separation_into_sim_info_window():
-    """ฟังก์ชันสำหรับรวม Display Separation เข้ากับ SimInfoWindow ที่มีอยู่"""
-    
-    # เพิ่มเมธอดใหม่เข้าไปใน SimInfoWindow class
-    def patch_sim_info_window():
-        # เพิ่มเมธอดลงใน SimInfoWindow
-        SimInfoWindow.init_display_separation = init_display_separation
-        SimInfoWindow.on_filtered_response = on_filtered_response
-        SimInfoWindow.toggle_display_separation = toggle_display_separation
-        
-        # เก็บ original methods
-        SimInfoWindow._original_setup_serial_monitor = SimInfoWindow.setup_serial_monitor
-        SimInfoWindow._original_send_at_command_main = SimInfoWindow.send_at_command_main
-        SimInfoWindow._original_send_sms_main = SimInfoWindow.send_sms_main
-        
-        # แทนที่ methods
-        SimInfoWindow.setup_serial_monitor = setup_serial_monitor_with_separation
-        SimInfoWindow.send_at_command_main = send_at_command_main_with_separation
-        SimInfoWindow.send_sms_main = send_sms_main_with_separation
-        
-        print("✅ SimInfoWindow patched with Display Separation!")
-    
-    return patch_sim_info_window
-
-# ===== 5. Auto Integration =====
-
-def auto_integrate_display_separation():
-    """อัตโนมัติรวม Display Separation เข้าไปใน SimInfoWindow ที่มีอยู่"""
-    patch_function = integrate_display_separation_into_sim_info_window()
-    patch_function()
-    
-    # Hook เข้าไปใน __init__ ของ SimInfoWindow
-    original_init = SimInfoWindow.__init__
-    
-    def enhanced_init(self, *args, **kwargs):
-        # เรียก __init__ เดิม
-        original_init(self, *args, **kwargs)
-        
-        # เพิ่ม Display Separation
-        self.init_display_separation()
-    
-    SimInfoWindow.__init__ = enhanced_init
-    print("✅ Auto integration completed!")
-
-# ===== 6. Test Function =====
-
-def test_integration():
-    """ทดสอบการรวม Display Separation"""
-    print("=== Testing Display Separation Integration ===")
-    
-    try:
-        # เรียกใช้ auto integration
-        auto_integrate_display_separation()
-        print("✅ Integration successful!")
-        
-        # ทดสอบสร้าง instance
-        # window = SimInfoWindow()  # จะมี Display Separation แล้ว
-        # print("✅ Window creation successful!")
-        
-    except Exception as e:
-        print(f"❌ Integration failed: {e}")
-
-# === Activate Display Separation patch ===
-auto_integrate_display_separation()
