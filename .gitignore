@@ -1,17 +1,40 @@
-# โฟลเดอร์ ใส่ / /
-/dist/ 
+# ============= Build outputs (PyInstaller) =============
+/dist/
 /build/
-
-# Python cache
-# ไฟล์ที่อยู่ในโฟลเดอร์ /*
-__pycache__/
-*.pyc
-# Logs
-log/*.csv
-
-# ไฟล์ไม่ได้อยู่ในโฟลเดอร์
-settings.json
-
 /releases/
+/.pyi-build/
+/**/_internal/
 
-printf "\n__pycache__/\n*.pyc\nlog/*.csv\nsettings.json\n" >> .gitignore
+# ============= Python artifacts =============
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# ============= Virtual envs =============
+.venv/
+venv/
+env/
+
+# ============= Logs & local data =============
+log/*.csv
+*.log
+windows/data/sms_cache.db
+at_command_history.txt
+
+# ============= Local configs (ไม่อยากให้ขึ้น repo) =============
+settings.json
+windows/config/db.json
+
+# ============= IDE / OS noise =============
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ============= (ตัวเลือก) ไฟล์ไบนารี ============
+# ถ้าไม่อยากให้ .exe เข้าสตีจ ให้ปลดคอมเมนต์บรรทัดด้านล่าง
+# *.exe
+# *.dll
