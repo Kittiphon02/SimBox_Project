@@ -1,40 +1,34 @@
-# ============= Build outputs (PyInstaller) =============
+# Build outputs
 /dist/
 /build/
 /releases/
 /.pyi-build/
 /**/_internal/
 
-# ============= Python artifacts =============
+# Python artifacts
 __pycache__/
 *.py[cod]
 *.pyd
-*.so
-*.egg-info/
-.eggs/
-
-# ============= Virtual envs =============
 .venv/
 venv/
 env/
 
-# ============= Logs & local data =============
+# Local data & logs
 log/*.csv
 *.log
 windows/data/sms_cache.db
 at_command_history.txt
 
-# ============= Local configs (ไม่อยากให้ขึ้น repo) =============
+# Local config (ไม่อยากเอาขึ้น)
 settings.json
 windows/config/db.json
 
-# ============= IDE / OS noise =============
+# IDE/OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
-# ============= (ตัวเลือก) ไฟล์ไบนารี ============
-# ถ้าไม่อยากให้ .exe เข้าสตีจ ให้ปลดคอมเมนต์บรรทัดด้านล่าง
+# (ตัวเลือก) กัน .exe/.dll โผล่สเตจ
 # *.exe
 # *.dll
