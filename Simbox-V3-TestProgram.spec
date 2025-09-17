@@ -1,16 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+block_cipher = None
+
+from PyInstaller.utils.hooks import collect_data_files
+
+# รวม data ที่ทำให้ไม่พังเรื่อง Lorem ipsum.txt
+datas  = collect_data_files('setuptools')
+datas += collect_data_files('jaraco.text', includes=['*.txt'])
+
+# (ตัวเลือก) รวมไฟล์แอปของคุณไปด้วย
+datas += [
+    ('windows/config/db.json', 'windows/config'),
+]
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('windows\\config', 'windows\\config')],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['PyQt5.QtWebEngineWidgets','PyQt5.QtWebEngineCore','PyQt5.QtWebEngine'],
     noarchive=False,
     optimize=0,
 )
@@ -27,11 +39,6 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
 )
 coll = COLLECT(
     exe,

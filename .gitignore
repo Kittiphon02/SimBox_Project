@@ -12,4 +12,6 @@ log/*.csv
 # ไฟล์ไม่ได้อยู่ในโฟลเดอร์
 settings.json
 
+/releases/
+
 printf "\n__pycache__/\n*.pyc\nlog/*.csv\nsettings.json\n" >> .gitignore

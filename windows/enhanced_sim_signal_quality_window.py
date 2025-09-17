@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QWidget, QProgressBar, QGroupBox, QGridLayout,
     QScrollArea, QFrame, QMessageBox, QApplication, QComboBox,
     QCheckBox, QSpinBox, QSlider, QTableWidget, QTableWidgetItem,
-    QHeaderView, QSplitter
+    QHeaderView, QSplitter, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QRect
 from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QPixmap, QPainter
@@ -1100,16 +1100,21 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         
         # Quality Distribution
         dist_group = QGroupBox("📈 Quality Distribution")
+        dist_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    
         dist_layout = QVBoxLayout()
         
         self.distribution_text = QTextEdit()
-        self.distribution_text.setMaximumHeight(200)
         self.distribution_text.setReadOnly(True)
-        self.distribution_text.setFont(QFont("Courier New", 10))
+        self.distribution_text.setFont(QFont("Courier New", 11))
+        # self.distribution_text.setMaximumHeight(200)
+        self.distribution_text.setMinimumHeight(360)
+        self.distribution_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         dist_layout.addWidget(self.distribution_text)
         
         dist_group.setLayout(dist_layout)
-        layout.addWidget(dist_group)
+        layout.addWidget(dist_group, 1)
         
         layout.addStretch()
         tab.setLayout(layout)
@@ -1340,8 +1345,8 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             if hasattr(self, 'sim_labels'):
                 self.sim_labels['network_type_detail'].setText(measurement.network_type)
                 
-                quality_assessment = self.get_signal_grade(measurement.rssi)
-                self.sim_labels['signal_assessment'].setText(quality_assessment)
+                numeric_quality_text = f"{measurement.rssi} dBm | {measurement.quality_score:.1f}%"
+                self.sim_labels['signal_assessment'].setText(numeric_quality_text)
             
         except Exception as e:
             print(f"Error updating signal display: {e}")
@@ -1452,6 +1457,45 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             
         except Exception as e:
             print(f"Error updating statistics: {e}")
+
+    @staticmethod
+    def _calc_quality_from_rssi_ber(rssi: int, ber: float) -> float:
+        if rssi is None or rssi <= -999: return 0.0
+        rssi_score = max(0, min(100, (rssi + 113) * 100.0 / 62.0))
+        ber_score  = 50.0 if ber is None or ber >= 99 else max(0, min(100, 100.0 - (ber * 10.0)))
+        return (rssi_score * 0.7) + (ber_score * 0.3)
+
+    def _quality_samples(self):
+        samples = []
+        for m in getattr(self, "measurements_history", []):
+            if not m or m.rssi is None or m.rssi <= -999: 
+                continue
+            q = (m.quality_score if getattr(m, "quality_score", None) not in (None, 0)
+                else self._calc_quality_from_rssi_ber(m.rssi, getattr(m, "ber", 99)))
+            if q > 0: samples.append(q)
+        return samples
+    
+    def _build_quality_distribution_text(self) -> str:
+        qualities = self._quality_samples()
+        total = len(qualities)
+        header = ["📊 QUALITY DISTRIBUTION", "======================="]
+        if total == 0:
+            return "\n".join(header + ["", "No data yet — start monitoring to collect samples."])
+        bins = [(90,101,"Excellent","🟢"), (80,90,"Very Good","✅"),
+                (70,80,"Good","📶"), (60,70,"Fair","🟠"), (0,60,"Poor","🔴")]
+        BAR_WIDTH = 42
+        lines = header + [""]
+        for lo, hi, label, icon in bins:
+            c = sum(1 for q in qualities if lo <= q < hi)
+            pct = (c/total)*100.0
+            bar = "█"*round(pct/100*BAR_WIDTH) + "░"*(BAR_WIDTH-round(pct/100*BAR_WIDTH))
+            lines.append(f"{icon} {label:<11} [{bar}] {c:>3} ({pct:>5.1f}%)")
+        lines += ["", f"Total Measurements: {total}", f"Avg Quality: {sum(qualities)/total:.1f}%"]
+        if getattr(self, "sim_identity", None):
+            si = self.sim_identity
+            lines.append(f"SIM: {si.carrier} (MCC: {si.mcc}, MNC: {si.mnc})")
+        return "\n".join(lines)
+
     
     def create_quality_distribution(self):
         try:
@@ -1460,10 +1504,10 @@ class EnhancedSIMSignalQualityWindow(QDialog):
             
             ranges = [
                 (90, 100, "Excellent", "🟢"),   # Office building = Excellent
-                (75, 89, "Good", "✅"),         # Satellite antenna = Good
-                (50, 74, "Fair", "📶"),         # Antenna bars = Fair
-                (25, 49, "Poor", "🟠"),         # Red circle = Poor
-                (0, 24, "Very Poor", "🔴")      # Warning sign = Very Poor
+                (80, 90, "Good", "✅"),         # Satellite antenna = Good
+                (70, 80, "Fair", "📶"),         # Antenna bars = Fair
+                (60, 70, "Poor", "🟠"),         # Red circle = Poor
+                (0, 60, "Very Poor", "🔴")      # Warning sign = Very Poor
             ]
 
             distribution_text = "📊 QUALITY DISTRIBUTION\n"
@@ -1477,8 +1521,9 @@ class EnhancedSIMSignalQualityWindow(QDialog):
                           if min_q <= m.quality_score <= max_q)
                 percentage = (count / total * 100) if total > 0 else 0
                 
-                bar_length = int(percentage / 5)
-                bar = "█" * bar_length + "░" * (20 - bar_length)
+                BAR_WIDTH = 40
+                bar_length = round(percentage * BAR_WIDTH / 100)
+                bar = "█" * bar_length + "░" * (BAR_WIDTH - bar_length)
                 
                 distribution_text += f"{icon} {label:<12} [{bar}] {count:>3} ({percentage:>5.1f}%)\n"
             
@@ -1813,18 +1858,19 @@ Debug Info:
             return "#95a5a6"  # Gray
     
     def get_signal_grade(self, rssi: int) -> str:
-        if rssi >= -70:
-            return "A+ (Excellent)"
-        elif rssi >= -80:
-            return "B+ (Very Good)"
-        elif rssi >= -90:
-            return "B (Good)"
-        elif rssi >= -100:
-            return "C (Fair)"
-        elif rssi >= -110:
-            return "D (Poor)"
-        else:
-            return "F (Very Poor)"
+        # if rssi >= -70:
+        #     return "A+ (Excellent)"
+        # elif rssi >= -80:
+        #     return "B+ (Very Good)"
+        # elif rssi >= -90:
+        #     return "B (Good)"
+        # elif rssi >= -100:
+        #     return "C (Fair)"
+        # elif rssi >= -110:
+        #     return "D (Poor)"
+        # else:
+            # return "F (Very Poor)"
+        return f"{rssi} dBm"
     
     def create_signal_bars_visual(self, bars: int) -> str:
         filled = "█" * bars
