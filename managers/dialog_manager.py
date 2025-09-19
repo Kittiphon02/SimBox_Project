@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import QDialog, QVBoxLayout, QMessageBox
 from PyQt5.QtCore import Qt, QTimer
 from widgets.sms_log_dialog import SmsLogDialog
 from widgets.sms_realtime_monitor import SmsRealtimeMonitor
+import sip
 
 class DialogManager:
     """จัดการ dialogs และหน้าต่างต่างๆ"""
@@ -19,27 +20,65 @@ class DialogManager:
         try:
             from widgets.sms_log_dialog import SmsLogDialog
             dlg = SmsLogDialog(filter_phone=filter_phone, parent=self.parent)
-            
-            # เชื่อมต่อ signal สำหรับส่ง SMS
+
+            # ส่ง SMS กลับหน้าหลัก (เหมือนเดิม)
             if hasattr(self.parent, 'prefill_sms_to_send'):
                 dlg.send_sms_requested.connect(self.parent.prefill_sms_to_send)
-            
+
             dlg.setModal(False)
-            dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | 
+            dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint |
                             Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
             dlg.show()
-            # — เพิ่มบรรทัดนี้หลัง dlg.show() —
-            mon = getattr(self.parent, 'sms_monitor_dialog', None)
-            if isinstance(mon, SmsRealtimeMonitor):
-                mon.log_updated.connect(dlg.load_log)
 
-            # เก็บ reference
+            # ✅ ต่อสัญญาณแบบปลอดภัย แทนการ connect(dlg.load_log) ตรงๆ
+            mon = getattr(self.parent, 'sms_monitor_dialog', None)
+            if isinstance(mon, SmsRealtimeMonitor) and hasattr(mon, 'log_updated'):
+                def _on_log_updated():
+                    try:
+                        if dlg is None or sip.isdeleted(dlg):
+                            return
+                        if not dlg.isVisible():
+                            return
+                        if not hasattr(dlg, 'combo') or sip.isdeleted(dlg.combo):
+                            return
+                        dlg.load_log()
+                    except RuntimeError:
+                        pass
+
+                # เก็บไว้ให้ cleanup ใช้ disconnect ได้
+                dlg._log_update_slot = _on_log_updated
+                mon.log_updated.connect(dlg._log_update_slot)
+
+                # ตัดต่อให้เรียบร้อยเมื่อ dialog ถูกทำลาย
+                def _cleanup_on_destroyed(*_):
+                    try:
+                        if hasattr(dlg, '_log_update_slot'):
+                            mon.log_updated.disconnect(dlg._log_update_slot)
+                    except Exception:
+                        pass
+                dlg.destroyed.connect(_cleanup_on_destroyed)
+
+            # เก็บ reference และล้างเมื่อปิด (เหมือนเดิม แต่เพิ่ม disconnect เผื่อ)
             self.open_dialogs.append(dlg)
-            dlg.finished.connect(lambda: self.cleanup_dialog(dlg))
-            
+
+            def _on_finished(*_):
+                try:
+                    # ถ้ามี slot ที่เก็บไว้ ให้ disconnect อีกรอบแบบกันพลาด
+                    mon2 = getattr(self.parent, 'sms_monitor_dialog', None)
+                    if mon2 is not None and hasattr(dlg, '_log_update_slot'):
+                        try:
+                            mon2.log_updated.disconnect(dlg._log_update_slot)
+                        except Exception:
+                            pass
+                    self.cleanup_dialog(dlg)
+                except Exception:
+                    pass
+
+            dlg.finished.connect(_on_finished)
+
         except Exception as e:
             self.show_error_message("SMS Log Error", f"Failed to open SMS log dialog: {e}")
-    
+
     def show_sms_realtime_monitor(self, port, baudrate, serial_thread=None):
         """เปิดหน้าต่าง SMS Real-time Monitor
         

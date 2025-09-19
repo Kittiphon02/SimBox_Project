@@ -28,6 +28,8 @@ from collections import deque
 from time import monotonic
 from widgets.loading_widget import LoadingWidget
 from pathlib import Path
+import sip 
+
 
 class SimInfoWindow(QMainWindow):
     """หน้าต่างหลักของโปรแกรม SIM Management System"""
@@ -69,6 +71,18 @@ class SimInfoWindow(QMainWindow):
             self._setup_enhanced_serial_connection()
             
         print("✅ Enhanced Display Separation setup completed")
+    
+    def _safe_load_log(self, dlg):
+        try:
+            if dlg is None or sip.isdeleted(dlg):
+                return
+            if not dlg.isVisible():
+                return
+            if not hasattr(dlg, "combo") or dlg.combo is None or sip.isdeleted(dlg.combo):
+                return
+            dlg.load_log()
+        except RuntimeError:
+            return
     
     def _setup_enhanced_serial_connection(self):
         """ตั้งค่าการเชื่อมต่อ Serial แบบ Enhanced"""
@@ -1187,16 +1201,26 @@ class SimInfoWindow(QMainWindow):
     def show_failed_sms_dialog(self):
         """แสดงหน้าต่างรายการ SMS ที่ส่งไม่สำเร็จ"""
         try:
-            # ใช้ค่า index 2 สำหรับ SMS Fail
+            from widgets.sms_log_dialog import SmsLogDialog
             dlg = SmsLogDialog(parent=self)
-            dlg.combo.setCurrentIndex(2)
-            dlg.load_log() 
-            
+
             dlg.setModal(False)
-            dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | 
+            dlg.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint |
                             Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
             dlg.show()
-            
+
+            def _deferred():
+                try:
+                    if dlg is None or sip.isdeleted(dlg):
+                        return
+                    if hasattr(dlg, "combo") and dlg.combo and not sip.isdeleted(dlg.combo):
+                        dlg.combo.setCurrentIndex(2)
+                    self._safe_load_log(dlg)
+                except RuntimeError:
+                    pass
+
+            QTimer.singleShot(0, _deferred)
+
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Cannot open Failed SMS dialog: {e}")
 
@@ -1242,14 +1266,18 @@ class SimInfoWindow(QMainWindow):
     
     def on_sms_log_updated(self):
         """จัดการเมื่อ SMS log ได้รับการอัพเดท"""
-        # วนดู dialog ที่เปิดอยู่ ถ้าเป็น SmsLogDialog ให้สั่งโหลด log ใหม่
-        for dlg in self.dialog_manager.open_dialogs:
-            if isinstance(dlg, SmsLogDialog):
-                dlg.load_log()
+        # ไล่เฉพาะ dialog ที่ยังอยู่จริง ๆ
+        for dlg in list(getattr(self.dialog_manager, "open_dialogs", [])):
+            try:
+                from widgets.sms_log_dialog import SmsLogDialog
+                if isinstance(dlg, SmsLogDialog):
+                    self._safe_load_log(dlg)
+            except Exception:
+                pass
         try:
             self.update_at_result_display("[LOG UPDATE] SMS inbox log has been updated")
-        except Exception as e:
-            print(f"Error handling log update: {e}")
+        except Exception:
+            pass
 
     # ==================== 7. SIM RECOVERY HANDLING ====================
     def on_sim_failure_detected(self):

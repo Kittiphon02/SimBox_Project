@@ -5,9 +5,21 @@ from .sms_log_store import (
     log_sms_failed as _log_failed,
     list_logs as _list_logs,
     count_inbox as _count_inbox,
+    delete_by_ids as _delete_by_ids,
+    delete_all as _delete_all,
+    vacuum_db as _vacuum_db
 )
 from .utility_functions import dedupe_event
 
+def delete_selected(direction: str, ids):
+    return _delete_by_ids(direction, ids)
+
+def delete_all(direction: str | None = None, only_failed: bool = False):
+    return _delete_all(direction, only_failed)
+
+def vacuum_db():
+    _vacuum_db()
+    
 # API ที่เคยมีอยู่
 def log_sms_sent(phone, message, status="ส่งสำเร็จ", dt=None):
     _log_sent(phone, message, status, dt); return True

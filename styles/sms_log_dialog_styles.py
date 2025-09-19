@@ -539,3 +539,38 @@ class SmsLogDialogStyles:
                 color: #7f8c8d;
             }
         """
+    
+    @staticmethod
+    def get_delete_button_style():
+        """Delete Button Style - ปุ่มลบโทนแดงเข้มพิเศษ"""
+        return """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #dc2626, stop:1 #b91c1c);
+                color: white;
+                border: 2px solid #991b1b;
+                padding: 10px 15px;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: bold;
+                text-align: center;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #b91c1c, stop:1 #991b1b);
+                border: 2px solid #7f1d1d;
+                box-shadow: 0 4px 8px rgba(220, 38, 38, 0.4);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #991b1b, stop:1 #7f1d1d);
+                border: 2px solid #7c2d12;
+                padding-top: 11px;
+                box-shadow: 0 2px 4px rgba(220, 38, 38, 0.6);
+            }
+            QPushButton:disabled {
+                background: #9ca3af;
+                border: 2px solid #6b7280;
+                color: #d1d5db;
+            }
+        """

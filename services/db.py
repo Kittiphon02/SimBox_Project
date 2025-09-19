@@ -1,36 +1,55 @@
-# services/db.py
-import os, json, sys
+# services/db.py  (SQLite, auto-create .db ข้างๆ ตัวโปรแกรม)
+import sys
 from pathlib import Path
-import pymysql
+import sqlite3
 
-def _find_dbjson():
-    cands = []
-    # รันจาก source
-    cands.append(Path(__file__).resolve().parents[1] / "windows" / "config" / "db.json")
-    # รันเป็น .exe (PyInstaller one-file/one-folder)
-    exe_dir = Path(getattr(sys, "frozen", False) and Path(sys.executable).resolve().parent or Path.cwd())
-    cands.append(exe_dir / "windows" / "config" / "db.json")
-    # ProgramData (เผื่อใช้กับ Installer)
-    cands.append(Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Simbox" / "config" / "db.json")
-    # โฟลเดอร์ทำงานปัจจุบัน
-    cands.append(Path.cwd() / "windows" / "config" / "db.json")
-    for p in cands:
-        if p.exists(): return p
-    return None
+def _app_dir():
+    # โหมด .exe (PyInstaller) → โฟลเดอร์เดียวกับไฟล์ .exe
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    # โหมดรันจากซอร์ส → โฟลเดอร์รากโปรเจกต์ (พาเรนต์ของ /services)
+    return Path(__file__).resolve().parents[1]
 
-_cfg = {}
-p = _find_dbjson()
-if p:
-    try: _cfg = json.loads(p.read_text(encoding="utf-8"))
-    except Exception: _cfg = {}
-
-DB_HOST = os.getenv("DB_HOST", _cfg.get("host", "127.0.0.1"))
-DB_PORT = int(os.getenv("DB_PORT", _cfg.get("port", 3306)))
-DB_USER = os.getenv("DB_USER", _cfg.get("user", "root"))
-DB_PASS = os.getenv("DB_PASS", _cfg.get("password", "sim12345"))
-DB_NAME = os.getenv("DB_NAME", _cfg.get("database", "sim_logs"))
+DB_PATH = _app_dir() / "sim_logs.db"
 
 def get_conn():
-    return pymysql.connect(host=DB_HOST, port=DB_PORT, user=DB_USER,
-        password=DB_PASS, database=DB_NAME, charset="utf8mb4",
-        autocommit=True, cursorclass=pymysql.cursors.DictCursor)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row  # ให้ได้ dict-like rows
+    return conn
+
+def init_db():
+    with get_conn() as conn:
+        c = conn.cursor()
+        # กล่องส่งออก
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sms_sent (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT,
+                message TEXT,
+                status TEXT,
+                is_failed INTEGER DEFAULT 0,
+                error_code TEXT,
+                dt TEXT
+            )
+        """)
+        # กล่องรับเข้า
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sms_inbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT,
+                message TEXT,
+                status TEXT,
+                dt TEXT
+            )
+        """)
+        # มุมมองรวม
+        c.execute("""
+            CREATE VIEW IF NOT EXISTS sms_logs AS
+            SELECT id, dt, 'sent'  AS direction, phone, message, status, is_failed FROM sms_sent
+            UNION ALL
+            SELECT id, dt, 'inbox' AS direction, phone, message, status, 0 AS is_failed FROM sms_inbox
+        """)
+        conn.commit()
+
+# สร้างฐานข้อมูล/ตารางทันทีเมื่อ import
+init_db()

@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QDateEdit, QCheckBox, QFrame, QSpacerItem, QShortcut, QFileDialog
 )
 from PyQt5.QtCore import Qt, QEvent, QDate, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QPalette, QColor, QKeySequence
+from PyQt5.QtGui import QFont, QPalette, QColor, QKeySequence, QBrush
 import sys, os, csv, time, re
 from datetime import datetime, timedelta
 from styles import SmsLogDialogStyles
@@ -14,6 +14,24 @@ from pathlib import Path
 import portalocker
 from core.utility_functions import normalize_phone_number
 from services.sms_log import list_logs
+import sip
+
+# --- helper สำหรับตรวจว่าเป็น Fail หรือไม่ ---
+FAIL_KEYWORDS = [
+    "ล้มเหลว", "ไม่สำเร็จ", "ส่งไม่สำเร็จ", "ผิดพลาด", "ขัดข้อง",
+    "fail", "failed", "error", "timeout", "time out", "not sent",
+    "denied", "reject", "rejected", "cancel", "cancelled", "no route", "no service",
+    "no sim", "pin required", "no signal", "no network", "connection"
+]
+def _is_fail_row(row: dict) -> bool:
+    try:
+        if int(row.get("is_failed", 0) or 0) == 1:
+            return True
+    except Exception:
+        pass
+    st = (row.get("status") or "").lower()
+    return any(k in st for k in FAIL_KEYWORDS)
+
 
 def get_log_directory_from_settings():
     """ดึง log directory จาก settings.json"""
@@ -576,7 +594,13 @@ class SmsLogDialog(QDialog):
         
         btn_layout.addStretch()
         
-        # ปุ่มต่างๆ
+        # --- ปุ่ม Delete ---
+        self.btn_delete = self.create_button("🗑 Delete", 120)
+        self.btn_delete.setToolTip("ลบรายการที่เลือก หรือทั้งแท็บ (Send/Inbox/Fail)")
+        self.btn_delete.clicked.connect(self.on_delete_clicked)
+        btn_layout.addWidget(self.btn_delete)
+
+        # ปุ่มอื่นๆ
         btn_refresh = self.create_button("🔄 Refresh", 120)
         btn_refresh.clicked.connect(self.load_log)
         btn_layout.addWidget(btn_refresh)
@@ -593,8 +617,9 @@ class SmsLogDialog(QDialog):
         footer_widget.setLayout(btn_layout)
         footer_widget.setMaximumHeight(60)
         
-        # จัดเก็บ reference สำหรับ styling
+        # จัดเก็บ reference สำหรับ styling/ใช้งานภายหลัง
         self.footer_widget = footer_widget
+        self.btn_delete = self.btn_delete
         self.btn_refresh = btn_refresh
         self.btn_export = btn_export
         self.btn_close = btn_close
@@ -634,6 +659,7 @@ class SmsLogDialog(QDialog):
         self.footer_widget.setStyleSheet(SmsLogDialogStyles.get_footer_style())
         
         # Buttons
+        self.btn_delete.setStyleSheet(SmsLogDialogStyles.get_delete_button_style())
         self.btn_refresh.setStyleSheet(SmsLogDialogStyles.get_info_button_style())
         self.btn_export.setStyleSheet(SmsLogDialogStyles.get_success_button_style())
         self.btn_close.setStyleSheet(SmsLogDialogStyles.get_danger_button_style())
@@ -711,13 +737,101 @@ class SmsLogDialog(QDialog):
             self.status_label.setText("📊 รายการทั้งหมด: 0")
             
     # ==================== 4. DATA LOADING ====================
-    def load_log(self):
-        """โหลดข้อมูลจากฐานข้อมูล MySQL (แทน CSV) — รองรับ Send/Inbox/Fail"""
-        idx = self.combo.currentIndex()
-        # 0=Send, 1=Inbox, 2=Fail (เก็บในตารางส่งพร้อม flag)
-        direction = 'sent' if idx in (0,2) else 'inbox'
+    def clear_table(self):
+        """ล้างข้อมูลตาราง + เคลียร์ buffer/ตัวนับ"""
         try:
-            rows = list_logs(direction=direction, limit=5000, order='DESC')
+            self.table.setRowCount(0)
+        except Exception:
+            pass
+        self.all_data = []
+        if hasattr(self, "total_label") and self.total_label is not None:
+            self.total_label.setText("รายการทั้งหมด: 0")
+
+    def _render_rows(self, rows, direction):
+        self.table.setRowCount(len(rows))
+        self.all_data = []
+
+        for i, r in enumerate(rows):
+            raw_dt = r.get('dt')
+            if hasattr(raw_dt, 'strftime'):
+                dt_obj = raw_dt
+                date = dt_obj.strftime("%d/%m/%Y")
+                time_str = dt_obj.strftime("%H:%M:%S")
+            else:
+                if direction == 'sent':
+                    date, time_str, dt_obj = self.parse_sent_datetime(str(raw_dt or ""))
+                else:
+                    date, time_str, dt_obj = self.parse_inbox_datetime(str(raw_dt or ""))
+
+            phone = r.get("phone") or ""
+            msg   = r.get("message") or ""
+
+            # ✅ สร้าง items แยกตัวแปรให้ถูกต้อง
+            it_date  = QTableWidgetItem(date)
+            it_time  = QTableWidgetItem(time_str)
+            it_phone = QTableWidgetItem(phone)
+            it_msg   = QTableWidgetItem(msg)
+
+            # ✅ ทำรายการที่เป็น Fail ให้เป็นสีแดง
+            try:
+                is_fail = _is_fail_row(r)   # ถ้ามี helper ตามที่เพิ่มไว้
+            except NameError:
+                is_fail = int(r.get("is_failed", 0) or 0) == 1
+
+            if is_fail:
+                red_fg   = QBrush(QColor(220, 53, 69))
+                light_bg = QBrush(QColor(255, 235, 238))
+                for it in (it_date, it_time, it_phone, it_msg):
+                    it.setForeground(red_fg)
+                    it.setBackground(light_bg)
+
+            # ใส่ลงตาราง
+            self.table.setItem(i, 0, it_date)
+            self.table.setItem(i, 1, it_time)
+            self.table.setItem(i, 2, it_phone)
+            self.table.setItem(i, 3, it_msg)
+
+            # ✅ อย่าลืมคอมม่าหลัง "message": msg
+            self.all_data.append({
+                "date": date,
+                "time": time_str,
+                "phone": phone,
+                "message": msg,
+                "datetime": dt_obj,
+                "status": r.get("status") or "",
+                "is_failed": int(r.get("is_failed", 0) or 0),
+            })
+
+        if hasattr(self, "total_label") and self.total_label is not None:
+            self.total_label.setText(f"รายการทั้งหมด: {len(rows)}")
+
+    def _inbox_has_data(self) -> bool:
+        """คืน True ถ้าในฐานข้อมูลมีรายการ SMS inbox อย่างน้อย 1 แถว"""
+        try:
+            from services.sms_log import list_logs
+            return bool(list_logs(direction="inbox", limit=1))
+        except Exception:
+            return False
+    
+    def load_log(self):
+        # ประเภทจากคอมโบ (0:send, 1:inbox, 2:fail)
+        idx = self.combo.currentIndex()
+        cat = {0: "send", 1: "inbox", 2: "fail"}.get(idx, "inbox")
+
+        # ดึง order จากคอมโบเรียง (รองรับชื่อทั้ง sort_combo / order_combo)
+        order = "DESC"
+        try:
+            combo = getattr(self, "sort_combo", None) or getattr(self, "order_combo", None)
+            if combo:
+                txt = (combo.currentText() or "").strip().upper()
+                order = "ASC" if ("เก่า" in txt or txt == "ASC") else "DESC"
+        except Exception:
+            pass
+
+        # ดึงข้อมูลตามทิศทาง
+        direction = "inbox" if cat == "inbox" else "sent"
+        try:
+            rows = list_logs(direction=direction, limit=5000, order=order) or []
         except Exception as e:
             print(f"DB error: {e}")
             self.show_error_message(e)
@@ -725,40 +839,61 @@ class SmsLogDialog(QDialog):
 
         self.all_data = []
         for r in rows:
-            # กรองเฉพาะ Fail เมื่อ idx==2
-            is_failed = bool(r.get('is_failed', 0)) or str(r.get('status') or '').startswith(('ล้มเหลว','ส่งไม่สำเร็จ'))
-            if idx == 2 and not is_failed:
-                continue
+            raw_dt = r.get("dt")
 
-            dt = r.get('dt')
-            date = dt.strftime('%d/%m/%Y') if hasattr(dt,'strftime') else ''
-            time_str = dt.strftime('%H:%M:%S') if hasattr(dt,'strftime') else ''
-            self.all_data.append({
-                'date': date,
-                'time': time_str,
-                'phone': r.get('phone') or '',
-                'message': r.get('message') or '',
-                'datetime': dt,
-                'status': r.get('status') or '',
-                'is_failed': int(is_failed)
-            })
+            # --- แปลงวันเวลาให้เป็นฟอร์แมตเดียวกับหน้า Send ---
+            if hasattr(raw_dt, "strftime"):
+                dt_obj = raw_dt
+                date = dt_obj.strftime("%d/%m/%Y")
+                time_str = dt_obj.strftime("%H:%M:%S")
+            else:
+                s = str(raw_dt or "")
+                if direction == "inbox":
+                    # ใช้ parser inbox (รองรับ 'YYYY-MM-DD HH:MM:SS' และรูปแบบ GSM)
+                    date, time_str, dt_obj = self.parse_inbox_datetime(s)
+                else:
+                    date, time_str, dt_obj = self.parse_sent_datetime(s)
 
-        # ใช้ฟังก์ชันกรอง/จัดเรียงเดิม
+            # ธง fail
+            try:
+                is_failed = 1 if _is_fail_row(r) else 0
+            except NameError:
+                # fallback ถ้ายังไม่มี helper
+                is_failed = int(r.get("is_failed", 0) or 0)
+
+            # เก็บเรคอร์ด
+            rec = {
+                "row_id": r.get("id"), 
+                "date": date,
+                "time": time_str,
+                "phone": r.get("phone") or "",
+                "message": r.get("message") or "",
+                "datetime": dt_obj,             # ใช้สำหรับ sort/filter
+                "status": r.get("status") or "",
+                "is_failed": is_failed,
+            }
+
+            if cat == "fail":
+                if rec["is_failed"] == 1:
+                    self.all_data.append(rec)
+            else:
+                # send / inbox
+                self.all_data.append(rec)
+
+        # --- กฎพิเศษ: ถ้า Inbox มีข้อมูล แต่ Send/Fail ไม่มี → หน้า Send/Fail ว่างเปล่า ---
+        if cat in ("send", "fail") and not self.all_data and self._inbox_has_data():
+            self.clear_table()           # ว่างจริง ไม่แสดงแถว "ไม่มีข้อมูล"
+            self.update_status_label(0)
+            return
+
+        # Inbox ไม่มีข้อมูล → ให้โชว์หน้าว่างแบบข้อความ
+        if cat == "inbox" and not self.all_data:
+            self.display_filtered_data([])    # จะขึ้น "ยังไม่มีประวัติ SMS เข้า"
+            self.update_status_label(0)
+            return
+
+        # ใช้การเรียงลำดับ/ฟิลเตอร์/วาดตารางตามเดิม
         self.apply_sort_filter()
-
-        def show_no_file_message(self):
-            """แสดงข้อความเมื่อไม่มีไฟล์"""
-            self.table.setRowCount(1)
-            self.table.setItem(0, 0, QTableWidgetItem("📂 ไม่มีไฟล์ log"))
-            self.table.setItem(0, 1, QTableWidgetItem(""))
-            self.table.setItem(0, 2, QTableWidgetItem(""))
-            self.table.setItem(0, 3, QTableWidgetItem("กรุณาส่ง SMS ก่อนเพื่อสร้างข้อมูล"))
-            for col in range(4):
-                it = self.table.item(0, col)
-                if it:
-                    it.setTextAlignment(Qt.AlignCenter)
-                    it.setForeground(QColor(127, 140, 141))
-            self.update_status_label()
 
     def _is_failed_sms(self, status):
         """ตรวจสอบว่า SMS ส่งไม่สำเร็จหรือไม่"""
@@ -802,41 +937,47 @@ class SmsLogDialog(QDialog):
             return dt_str, "", None
 
     def parse_inbox_datetime(self, dt_str):
-        """แยกฟังก์ชัน parse วันที่สำหรับ inbox - แก้ไขให้ได้รูปแบบ DD/MM/YYYY"""
-        try:
-            if "," not in dt_str:
-                return dt_str, "", None
+        """แปลงวันที่/เวลา SMS Inbox ให้ได้รูปแบบเดียวกับ SMS Send (DD/MM/YYYY, HH:MM:SS).
 
-            # แยกวันที่และเวลา
-            dpart, tpart = dt_str.split(",", 1)
+        รองรับทั้ง:
+        - 'YYYY-MM-DD HH:MM:SS'  (ที่มาจากฐานข้อมูล)
+        - 'DD/MM/YY,HH:MM:SS+zz' (บางโมเด็มรายงานมาแบบนี้)
+        """
+        s = (dt_str or "").strip()
+
+        # 1) ลองฟอร์แมตแบบ DB ก่อน: YYYY-MM-DD HH:MM:SS
+        try:
+            dt = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+            return dt.strftime("%d/%m/%Y"), dt.strftime("%H:%M:%S"), dt
+        except Exception:
+            pass
+
+        # 2) ลองฟอร์แมตแบบ GSM: DD/MM/YY,HH:MM:SS+zz
+        try:
+            if "," not in s:
+                return s, "", None
+
+            dpart, tpart = s.split(",", 1)
             time_str = tpart.split("+", 1)[0].strip()
 
-            # แยกวันที่เป็น [DD, MM, YY or YYYY]
             parts = dpart.split("/")
             if len(parts) != 3:
-                return dt_str, "", None
-            dd, mm, yy = parts
-            dd, mm = int(dd), int(mm)
-            yy = int(yy)
+                return s, "", None
 
-            # แปลงปี 2 หลัก → 4 หลัก ถ้ายาว 4 หลัก ก็ตีตรงๆ
-            if len(parts[2]) == 2:
-                current_year = datetime.now().year
-                pivot = current_year % 100
-                if yy <= pivot:
-                    yyyy = 2000 + yy
-                else:
-                    yyyy = 1900 + yy
+            dd, mm, yy = int(parts[0]), int(parts[1]), int(parts[2])
+
+            # ปี 2 หลัก -> 4 หลัก
+            if parts[2].isdigit() and len(parts[2]) == 2:
+                cur_yy = datetime.now().year % 100
+                yyyy = 2000 + yy if yy <= cur_yy else 1900 + yy
             else:
                 yyyy = yy
 
-            # สร้าง text และ datetime object
-            date = f"{dd:02d}/{mm:02d}/{yyyy}"
-            dt_obj = datetime.strptime(f"{yyyy}-{mm:02d}-{dd:02d} {time_str}", 
-                                        "%Y-%m-%d %H:%M:%S")
-            return date, time_str, dt_obj
+            dt = datetime.strptime(f"{yyyy:04d}-{mm:02d}-{dd:02d} {time_str}", "%Y-%m-%d %H:%M:%S")
+            return dt.strftime("%d/%m/%Y"), dt.strftime("%H:%M:%S"), dt
         except Exception:
-            return dt_str, "", None
+            return s, "", None
+
 
     # ==================== 5. DATA FILTERING & SORTING ====================
     def apply_sort_filter(self):
@@ -852,10 +993,10 @@ class SmsLogDialog(QDialog):
             filtered_data = self.all_data.copy()
             idx = self.combo.currentIndex()
             
-            # ถ้าเป็น SMS Fail ให้กรองเฉพาะที่ status ไม่ใช่ "Sent"
+            # ถ้าเป็น SMS Fail ให้เอาเฉพาะเรคอร์ดที่ติดธง is_failed = 1
             if idx == 2:
-                filtered_data = [d for d in filtered_data if d.get('status', '').lower() != 'sent']
-            
+                filtered_data = [d for d in filtered_data if int(d.get('is_failed', 0) or 0) == 1]
+
             # เรียงลำดับตามที่เลือก
             if self.sort_combo.currentIndex() == 0:  # รายการล่าสุด (ใหม่ → เก่า)
                 filtered_data.sort(key=lambda x: x['datetime'] if x['datetime'] else datetime.min, reverse=True)
@@ -942,6 +1083,14 @@ class SmsLogDialog(QDialog):
                 phone_item.setForeground(QColor(231, 76, 60))
             
             self.table.setItem(row_idx, 3, message_item)
+
+            # ฝัง row_id ลงใน cell (สำหรับลบ)
+            row_id = item.get("row_id")
+            if row_id is not None:
+                for col in range(4):
+                    cell_item = self.table.item(row_idx, col)
+                    if cell_item:
+                        cell_item.setData(Qt.UserRole, int(row_id))
             
             # เพิ่มสีสันให้แถว
             if row_idx % 2 == 0:
@@ -975,6 +1124,73 @@ class SmsLogDialog(QDialog):
         self.send_sms_requested.emit(phone, message)
         # ปิด dialog
         self.accept()
+    
+    def on_delete_clicked(self):
+        """
+        ลบประวัติ SMS:
+        - ถ้าเลือกหลายแถว → ลบเฉพาะแถวที่เลือก
+        - ถ้าไม่ได้เลือก → ถามว่าจะลบทั้งแท็บนี้ไหม (Send/Inbox/Fail)
+        """
+        try:
+            from services.sms_log import delete_selected, delete_all, vacuum_db
+        except Exception as e:
+            QMessageBox.warning(self, "Delete Error", f"ไม่สามารถเรียกใช้บริการลบได้: {e}")
+            return
+
+        # แท็บปัจจุบัน
+        idx = self.combo.currentIndex() if hasattr(self, "combo") else 0
+        view = {0: "send", 1: "inbox", 2: "fail"}.get(idx, "send")
+        direction = "inbox" if view == "inbox" else "sent"
+
+        # ดึง id ของแถวที่เลือก
+        sel_rows = sorted({mi.row() for mi in self.table.selectionModel().selectedRows()})
+        chosen_ids = []
+        for r in sel_rows:
+            it = self.table.item(r, 0)
+            if it:
+                rid = it.data(Qt.UserRole)
+                if rid is not None:
+                    chosen_ids.append(int(rid))
+
+        # ไม่มีการเลือก → ถามว่าจะลบทั้งหมดในแท็บนี้ไหม
+        if not chosen_ids:
+            # Fail = ลบเฉพาะ fail ในตาราง sent
+            only_failed = (view == "fail")
+            label_map = {"send": "ประวัติ SMS ส่งออกทั้งหมด",
+                        "inbox": "ประวัติ SMS เข้า",
+                        "fail": "ประวัติ SMS ที่ส่งไม่สำเร็จ"}
+            msg = f"ต้องการลบ{label_map.get(view, 'ข้อมูลในหน้านี้')} ทั้งหมดหรือไม่?"
+            if QMessageBox.question(self, "Confirm Delete", msg,
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+            try:
+                delete_all(direction=direction, only_failed=only_failed)
+                vacuum_db()
+            except Exception as e:
+                QMessageBox.warning(self, "Delete Error", f"ลบไม่สำเร็จ: {e}")
+                return
+            self.load_log()
+            return
+
+        # มีการเลือก → ยืนยันลบเฉพาะรายการที่เลือก
+        if QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"ต้องการลบ {len(chosen_ids)} รายการที่เลือกหรือไม่?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        ) != QMessageBox.Yes:
+            return
+
+        try:
+            delete_selected(direction, chosen_ids)
+            vacuum_db()
+        except Exception as e:
+            QMessageBox.warning(self, "Delete Error", f"ลบไม่สำเร็จ: {e}")
+            return
+
+        self.load_log()
+
 
     # ==================== 8. EXPORT FUNCTIONS ====================
     def export_to_excel(self):
