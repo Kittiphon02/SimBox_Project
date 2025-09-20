@@ -12,7 +12,7 @@ from core import list_serial_ports, safe_get_attr, SettingsManager, ThemeManager
 from managers import (
     ATCommandManager, SpecialCommandHandler,
     PortManager, SerialConnectionManager, SimRecoveryManager,
-    SMSHandler, SMSInboxManager, DialogManager, SyncManager
+    SMSHandler, SMSInboxManager, DialogManager
 )
 from services import load_sim_data, SerialMonitorThread
 from widgets import SimTableWidget
@@ -158,7 +158,6 @@ class SimInfoWindow(QMainWindow):
         self.serial_connection_manager = SerialConnectionManager(self)
         self.sim_recovery_manager = SimRecoveryManager(self)
         self.dialog_manager = DialogManager(self)
-        self.sync_manager = SyncManager(self)
 
     def load_application_settings(self):
         """โหลดการตั้งค่าโปรแกรม"""
@@ -234,8 +233,87 @@ class SimInfoWindow(QMainWindow):
         modem_group.setLayout(modem_layout)
         self.main_layout.addWidget(modem_group)
         self.main_layout.addSpacing(16)
+
+        # === PORT STATUS BANNER (ใหญ่ อ่านง่าย) ===
+        self.port_status_banner = QLabel("🔴 Not connected")
+        self.port_status_banner.setAlignment(Qt.AlignCenter)
+        self.port_status_banner.setMinimumHeight(40)
+        self.port_status_banner.setStyleSheet("""
+        QLabel {
+            padding: 8px 14px;
+            border-radius: 12px;
+            border: 2px solid #fecaca;
+            background: #fee2e2;
+            color: #991b1b;
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: .3px;
+        }
+        """)
+        self.main_layout.addWidget(self.port_status_banner)
+        # ค่าเริ่มต้น
+        self.set_port_status('disconnected')
         
         self.modem_group = modem_group
+        self._bind_port_ui_events()
+    
+    def _bind_port_ui_events(self):
+        def _refresh_label():
+            cb_port = getattr(self, 'port_combo', None) or getattr(self, 'usb_port_combo', None)
+            cb_baud = getattr(self, 'baud_combo', None) or getattr(self, 'baudrate_combo', None)
+            port = cb_port.currentData() or cb_port.currentText() if cb_port else "-"
+            baud = cb_baud.currentText() if cb_baud else "-"
+            self.set_port_status('selected', port, baud)
+
+        cb_port = getattr(self, 'port_combo', None) or getattr(self, 'usb_port_combo', None)
+        cb_baud = getattr(self, 'baud_combo', None) or getattr(self, 'baudrate_combo', None)
+        if cb_port: cb_port.currentIndexChanged.connect(_refresh_label)
+        if cb_baud: cb_baud.currentIndexChanged.connect(_refresh_label)
+
+    def set_port_status(self, state: str, port: str = None, baudrate: int | str = None):
+        """
+        state: 'disconnected' | 'connecting' | 'connected' | 'selected'
+        """
+        text = "🔴 Not connected"
+        style = """
+            QLabel { background:#fee2e2; color:#991b1b; border:2px solid #fecaca;
+                    border-radius:12px; padding:8px 14px; font-size:16px; font-weight:700; }
+        """
+        if state == "connecting":
+            text = f"🟡 Connecting: {port or '-'} @ {baudrate or '-'} ..."
+            style = """
+                QLabel { background:#fef9c3; color:#854d0e; border:2px solid #fde68a;
+                        border-radius:12px; padding:8px 14px; font-size:16px; font-weight:700; }
+            """
+        elif state == "connected":
+            text = f"🟢 Connected: {port or '-'} @ {baudrate or '-'}"
+            style = """
+                QLabel { background:#dcfce7; color:#166534; border:2px solid #86efac;
+                        border-radius:12px; padding:8px 14px; font-size:16px; font-weight:700; }
+            """
+        elif state == "selected":
+            text = f"🟠 Selected: {port or '-'} @ {baudrate or '-'} — not connected"
+            style = """
+                QLabel { background:#ffedd5; color:#9a3412; border:2px solid #fed7aa;
+                        border-radius:12px; padding:8px 14px; font-size:16px; font-weight:700; }
+            """
+
+        if hasattr(self, "port_status_banner") and self.port_status_banner is not None:
+            self.port_status_banner.setText(text)
+            self.port_status_banner.setStyleSheet(style)
+    
+    def on_serial_connected(self, port: str, baudrate: int):
+        self.set_port_status('connected', port, baudrate)
+        try:
+            # จำการเชื่อมต่อล่าสุดไว้
+            self.settings_manager.update_last_connection(port, str(baudrate))
+        except Exception:
+            pass
+        self.update_at_result_display(f"[PORT] ✅ Connected to {port} @ {baudrate}")
+
+    def on_serial_disconnected(self):
+        self.set_port_status('disconnected')
+        self.update_at_result_display("[PORT] 🔌 Disconnected")
     
     def create_control_buttons(self, layout):
         """สร้างปุ่มควบคุมต่างๆ - Updated version with improved Signal Quality button"""
@@ -317,31 +395,31 @@ class SimInfoWindow(QMainWindow):
         """)
         layout.addWidget(self.btn_signal_quality)
         
-        # ปุ่ม Sync
-        self.btn_sync = QPushButton("🔄 Sync")
-        self.btn_sync.setFixedWidth(100)
-        self.btn_sync.clicked.connect(self.sync_manager.manual_sync)
-        self.btn_sync.setStyleSheet("""
-            QPushButton {
-                background-color: #3498db;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-            QPushButton:pressed {
-                background-color: #21618c;
-            }
-            QPushButton:disabled {
-                background-color: #bdc3c7;
-                color: #7f8c8d;
-            }
-        """)
-        layout.addWidget(self.btn_sync)
+        # # ปุ่ม Sync
+        # self.btn_sync = QPushButton("🔄 Sync")
+        # self.btn_sync.setFixedWidth(100)
+        # self.btn_sync.clicked.connect(self.sync_manager.manual_sync)
+        # self.btn_sync.setStyleSheet("""
+        #     QPushButton {
+        #         background-color: #3498db;
+        #         color: white;
+        #         border: none;
+        #         padding: 8px 16px;
+        #         border-radius: 4px;
+        #         font-weight: bold;
+        #     }
+        #     QPushButton:hover {
+        #         background-color: #2980b9;
+        #     }
+        #     QPushButton:pressed {
+        #         background-color: #21618c;
+        #     }
+        #     QPushButton:disabled {
+        #         background-color: #bdc3c7;
+        #         color: #7f8c8d;
+        #     }
+        # """)
+        # layout.addWidget(self.btn_sync)
         
         # SMS Inbox Badge Container (เหมือนเดิม)
         sms_container = QWidget()
@@ -642,13 +720,10 @@ class SimInfoWindow(QMainWindow):
         self.btn_send_at.setFixedWidth(120)
         self.btn_send_sms_main = QPushButton("Send SMS")
         self.btn_send_sms_main.setFixedWidth(100)
-        self.btn_show_sms = QPushButton("SMS inbox")
-        self.btn_show_sms.setFixedWidth(120)
-        self.btn_clear_sms_main = QPushButton("Delete SMS")
-        self.btn_clear_sms_main.setFixedWidth(130)
         
-        for btn in (self.btn_send_at, self.btn_send_sms_main, self.btn_show_sms, self.btn_clear_sms_main):
+        for btn in (self.btn_send_at, self.btn_send_sms_main):
             btn_at_layout.addWidget(btn)
+
         btn_at_layout.addStretch()
         left_layout.addLayout(btn_at_layout)
         left_layout.addSpacing(10)
@@ -749,9 +824,9 @@ class SimInfoWindow(QMainWindow):
         self.btn_del_cmd.setStyleSheet(MainWindowStyles.get_delete_button_style())
         self.btn_help.setStyleSheet(MainWindowStyles.get_help_button_style())
         self.btn_send_at.setStyleSheet(MainWindowStyles.get_send_at_button_style())
-        self.btn_show_sms.setStyleSheet(MainWindowStyles.get_show_sms_button_style())
+        # self.btn_show_sms.setStyleSheet(MainWindowStyles.get_show_sms_button_style())
         self.btn_send_sms_main.setStyleSheet(MainWindowStyles.get_send_sms_button_style())
-        self.btn_clear_sms_main.setStyleSheet(MainWindowStyles.get_clear_sms_button_style())
+        # self.btn_clear_sms_main.setStyleSheet(MainWindowStyles.get_clear_sms_button_style())
         self.btn_clear_response.setStyleSheet(MainWindowStyles.get_clear_response_button_style())
         self.btn_refresh.setStyleSheet(MainWindowStyles.get_refresh_button_style())
         self.btn_smslog.setStyleSheet(MainWindowStyles.get_smslog_button_style())
@@ -782,12 +857,12 @@ class SimInfoWindow(QMainWindow):
         
         # SMS management
         self.btn_send_sms_main.clicked.connect(self.send_sms_main)
-        self.btn_show_sms.clicked.connect(self.sms_inbox_manager.show_inbox_sms)
-        self.btn_clear_sms_main.clicked.connect(self.sms_inbox_manager.clear_all_sms)
+        # self.btn_show_sms.clicked.connect(self.sms_inbox_manager.show_inbox_sms)
+        # self.btn_clear_sms_main.clicked.connect(self.sms_inbox_manager.clear_all_sms)
     
         # ⭐ เพิ่มการเชื่อมต่อปุ่ม SMS ที่ส่งไม่สำเร็จ
-        if hasattr(self, 'btn_failed_sms'):
-            self.btn_failed_sms.clicked.connect(self.show_failed_sms_dialog)
+        # if hasattr(self, 'btn_failed_sms'):
+        #     self.btn_failed_sms.clicked.connect(self.show_failed_sms_dialog)
         
         # AT Command management
         self.btn_send_at.clicked.connect(self.send_at_command_main)
@@ -796,8 +871,8 @@ class SimInfoWindow(QMainWindow):
         
         # SMS management - ใช้เมธอดที่อัพเดทแล้ว
         self.btn_send_sms_main.clicked.connect(self.send_sms_main)
-        self.btn_show_sms.clicked.connect(self.sms_inbox_manager.show_inbox_sms)
-        self.btn_clear_sms_main.clicked.connect(self.sms_inbox_manager.clear_all_sms)
+        # self.btn_show_sms.clicked.connect(self.sms_inbox_manager.show_inbox_sms)
+        # self.btn_clear_sms_main.clicked.connect(self.sms_inbox_manager.clear_all_sms)
         
         # แก้ไข Enter key connections - ใช้วิธีที่ปลอดภัยกว่า
         try:
@@ -873,12 +948,6 @@ class SimInfoWindow(QMainWindow):
         # รีเฟรชพอร์ต
         self.refresh_ports()
         self.refresh_sms_inbox_counter()
-
-        # ทดสอบ network connection
-        self.sync_manager.test_network_connection()
-        
-        # เริ่ม Auto Sync เมื่อเริ่มโปรแกรม
-        self.sync_manager.auto_sync_on_startup()
 
         # ถ้าเปิด auto ให้สตาร์ท monitor
         if self.auto_sms_monitor:

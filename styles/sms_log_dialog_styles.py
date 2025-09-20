@@ -29,13 +29,28 @@ class SmsLogDialogStyles:
     # ==================== CONTROL SECTION STYLES ====================
     @staticmethod
     def get_control_section_style():
-        """Control Section Style - ส่วนควบคุมโทนแดงอ่อน"""
+        """
+        สไตล์สำหรับโซนควบคุมด้านบน:
+        - #control_container  : กรอบใหญ่ (คงขอบไว้)
+        - #category_block/#sort_block : บล็อกเล็ก (ตัดขอบออก)
+        """
         return """
-            QWidget {
+            /* กรอบใหญ่ */
+            QWidget#control_container {
                 background-color: #fff5f5;
-                border: 2px solid #dc3545;
-                border-radius: 8px;
+                border: 2px solid #f1b0b7;   /* ขอบแดงอ่อน */
+                border-radius: 10px;
                 padding: 10px;
+            }
+
+            /* บล็อกย่อยสองอัน: เอาเส้นขอบออกทั้งหมด */
+            QWidget#category_block,
+            QWidget#sort_block {
+                background: transparent;
+                border: none;
+                border-radius: 0;
+                padding: 0;
+                margin: 0;
             }
         """
     

@@ -228,6 +228,8 @@ class SerialConnectionManager:
             
             # ทดสอบการเชื่อมต่อก่อน
             try:
+                if hasattr(self.parent, 'set_port_status'):
+                    self.parent.set_port_status('connecting', port, baudrate)
                 test_serial = serial.Serial(port, baudrate, timeout=2)
                 test_serial.close()
             except Exception as e:
@@ -237,6 +239,12 @@ class SerialConnectionManager:
             
             from services.serial_service import SerialMonitorThread
             serial_thread = SerialMonitorThread(port, baudrate)
+
+            # ✅ ต่อสำเร็จ / หลุดการเชื่อมต่อ
+            if hasattr(self.parent, 'on_serial_connected'):
+                serial_thread.connected_signal.connect(self.parent.on_serial_connected, Qt.UniqueConnection)
+            if hasattr(self.parent, 'on_serial_disconnected'):
+                serial_thread.disconnected_signal.connect(self.parent.on_serial_disconnected, Qt.UniqueConnection)
             
             # เชื่อมต่อ signals ใหม่ด้วย UniqueConnection เพื่อป้องกันการซ้ำ
             from PyQt5.QtCore import Qt
@@ -280,6 +288,8 @@ class SerialConnectionManager:
         except Exception as e:
             if hasattr(self.parent, 'update_at_result_display'):
                 self.parent.update_at_result_display(f"[SETUP ERROR] Failed to setup serial monitor: {e}")
+            if hasattr(self.parent, 'set_port_status'):
+                self.parent.set_port_status('disconnected')
             return None
     
     def start_sms_monitor(self, port, baudrate):
@@ -321,7 +331,8 @@ class SerialConnectionManager:
         except Exception as e:
             if hasattr(self.parent, 'update_at_result_display'):
                 self.parent.update_at_result_display(f"[SETUP ERROR] Error stopping serial monitor: {e}")
-
+            if hasattr(self.parent, 'on_serial_disconnected'):
+                self.parent.on_serial_disconnected()
 
 class SimRecoveryManager:
     def __init__(self, parent=None):

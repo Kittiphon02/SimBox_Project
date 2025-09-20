@@ -85,6 +85,31 @@ class SmsLogDialog(QDialog):
         self._poll.timeout.connect(self.load_log)
         self._poll.start()
 
+        self._init_csv_watch()
+    
+    def _init_csv_watch(self):
+        try:
+            from services.sms_log_store import READ_FROM_CSV, get_csv_file_path
+        except Exception:
+            return
+        if not READ_FROM_CSV:
+            return
+        import os
+        self._csv_path = get_csv_file_path()
+        self._csv_mtime = os.path.getmtime(self._csv_path) if os.path.exists(self._csv_path) else None
+        self._csv_timer = QTimer(self)
+        self._csv_timer.setInterval(3000)  # 3 วิ
+        def _tick():
+            if not os.path.exists(self._csv_path): return
+            m = os.path.getmtime(self._csv_path)
+            if self._csv_mtime is None:
+                self._csv_mtime = m; return
+            if m != self._csv_mtime:
+                self._csv_mtime = m
+                self.load_log()
+        self._csv_timer.timeout.connect(_tick)
+        self._csv_timer.start()
+
     # ==================== 2. UI SETUP ====================
     def setup_simplified_ui(self):
         """ตั้งค่า UI แบบง่าย เหลือแค่การเลือกรายการล่าสุดหรือเก่ากว่า - Enhanced version"""
@@ -512,33 +537,45 @@ class SmsLogDialog(QDialog):
     def create_simple_control_section(self):
         """สร้างส่วนควบคุมแบบง่าย - เก็บ SMS Fail option ไว้"""
         control_widget = QWidget()
-        
-        hlayout = QHBoxLayout()
+        control_widget.setObjectName("control_container")   # ← กรอบใหญ่
+
+        hlayout = QHBoxLayout(control_widget)
         hlayout.setSpacing(15)
         hlayout.setContentsMargins(15, 10, 15, 10)
-        
-        # ป้าย "ประเภท"
-        label_history = QLabel("📂 ประเภท:")
-        hlayout.addWidget(label_history)
 
-        # ComboBox เลือกประเภท SMS - ⭐ เก็บ SMS Fail ไว้
+        # ---------- บล็อก "ประเภท" ----------
+        self.category_container = QWidget()
+        self.category_container.setObjectName("category_block")   # ← บล็อกย่อย
+        cat_layout = QHBoxLayout(self.category_container)
+        cat_layout.setContentsMargins(0, 0, 0, 0)
+        cat_layout.setSpacing(8)
+
+        label_history = QLabel("📂 ประเภท:")
+        cat_layout.addWidget(label_history)
+
         self.combo = QComboBox()
         self.combo.addItems([
-            "📤 SMS Send", 
-            "📥 SMS Inbox", 
-            "❌ SMS Fail"  # ⭐ เก็บตัวเลือกนี้ไว้
+            "📤 SMS Send",
+            "📥 SMS Inbox",
+            "❌ SMS Fail"
         ])
         self.combo.setFixedWidth(150)
         self.combo.setFixedHeight(32)
         self.combo.currentIndexChanged.connect(self.load_log)
-        hlayout.addWidget(self.combo)
+        cat_layout.addWidget(self.combo)
 
-        hlayout.addSpacing(30)
+        hlayout.addWidget(self.category_container)
 
-        # การเรียงลำดับ
+        # ---------- บล็อก "เรียงลำดับ" ----------
+        self.order_container = QWidget()
+        self.order_container.setObjectName("sort_block")    # ← บล็อกย่อย
+        order_layout = QHBoxLayout(self.order_container)
+        order_layout.setContentsMargins(0, 0, 0, 0)
+        order_layout.setSpacing(8)
+
         sort_label = QLabel("🔄 เรียงลำดับ:")
-        hlayout.addWidget(sort_label)
-        
+        order_layout.addWidget(sort_label)
+
         self.sort_combo = QComboBox()
         self.sort_combo.addItems([
             "รายการล่าสุด (ใหม่)",
@@ -547,17 +584,17 @@ class SmsLogDialog(QDialog):
         self.sort_combo.setFixedWidth(200)
         self.sort_combo.setFixedHeight(32)
         self.sort_combo.currentIndexChanged.connect(self.apply_sort_filter)
-        hlayout.addWidget(self.sort_combo)
+        order_layout.addWidget(self.sort_combo)
+
+        hlayout.addWidget(self.order_container)
 
         hlayout.addStretch()
-        
-        control_widget.setLayout(hlayout)
-        
-        # จัดเก็บ reference สำหรับ styling
+
+        # เก็บอ้างอิงสำหรับใช้ใน apply_styles()
         self.control_widget = control_widget
         self.label_history = label_history
         self.sort_label = sort_label
-        
+
         return control_widget
 
     def create_maximized_table_section(self):

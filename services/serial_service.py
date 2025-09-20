@@ -13,6 +13,9 @@ class SerialMonitorThread(QThread):
     sim_ready_signal = pyqtSignal()
     cpin_status_signal = pyqtSignal(str)
     cpin_ready_detected = pyqtSignal()
+
+    connected_signal = pyqtSignal(str, int)   # (port, baudrate)
+    disconnected_signal = pyqtSignal()        # no args
     
     def __init__(self, port, baudrate):
         super().__init__()
@@ -59,6 +62,7 @@ class SerialMonitorThread(QThread):
         try:
             self.serial_conn = serial.Serial(self.port, self.baudrate, timeout=1)
             self.at_response_signal.emit(f"[SETUP] Connected to {self.port} at {self.baudrate} baud.")
+            self.connected_signal.emit(self.port, self.baudrate)
 
             while self.running:
                 if self.serial_conn and self.serial_conn.in_waiting:
@@ -85,6 +89,8 @@ class SerialMonitorThread(QThread):
                 except:
                     pass
                 self.serial_conn = None
+            #แจ้ง UI ว่าถูกตัดการเชื่อมต่อแล้ว (ไม่ว่าเหตุผลใด)
+            self.disconnected_signal.emit()
     
     def process_received_line(self, line):
         """ประมวลผลข้อมูลที่รับมา - Fixed SMS 2-line processing"""
