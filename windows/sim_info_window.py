@@ -30,7 +30,6 @@ from widgets.loading_widget import LoadingWidget
 from pathlib import Path
 import sip 
 
-
 class SimInfoWindow(QMainWindow):
     """หน้าต่างหลักของโปรแกรม SIM Management System"""
     at_manual_signal  = pyqtSignal(str)   # สำหรับผล AT ที่ผู้ใช้กดเอง → ไปช่อง Response หน้าแรก
@@ -251,28 +250,40 @@ class SimInfoWindow(QMainWindow):
         }
         """)
         self.main_layout.addWidget(self.port_status_banner)
-        # ค่าเริ่มต้น
+
+        # ตั้งค่าเริ่มต้น + bind event (เรียกครั้งเดียวพอ)
         self.set_port_status('disconnected')
-        
+        self.bind_port_ui_events()
+
         self.modem_group = modem_group
-        self._bind_port_ui_events()
     
-    def _bind_port_ui_events(self):
+    def bind_port_ui_events(self):
+        """ผูกอีเวนต์ของ combobox พอร์ต/baud ให้รีเฟรชป้าย 'selected' เฉพาะตอนยังไม่เชื่อมต่อจริง"""
         def _refresh_label():
-            cb_port = getattr(self, 'port_combo', None) or getattr(self, 'usb_port_combo', None)
-            cb_baud = getattr(self, 'baud_combo', None) or getattr(self, 'baudrate_combo', None)
+            # ถ้ายังเชื่อมต่ออยู่ อย่าทับสถานะ
+            is_connected = bool(
+                hasattr(self, 'serial_thread') and
+                self.serial_thread and
+                self.serial_thread.isRunning()
+            )
+            if is_connected:
+                return
+
+            cb_port = getattr(self, 'usb_port_combo', None) or getattr(self, 'port_combo', None)
+            cb_baud = getattr(self, 'baudrate_combo', None) or getattr(self, 'baud_combo', None)
             port = cb_port.currentData() or cb_port.currentText() if cb_port else "-"
             baud = cb_baud.currentText() if cb_baud else "-"
             self.set_port_status('selected', port, baud)
 
-        cb_port = getattr(self, 'port_combo', None) or getattr(self, 'usb_port_combo', None)
-        cb_baud = getattr(self, 'baud_combo', None) or getattr(self, 'baudrate_combo', None)
+        cb_port = getattr(self, 'usb_port_combo', None) or getattr(self, 'port_combo', None)
+        cb_baud = getattr(self, 'baudrate_combo', None) or getattr(self, 'baud_combo', None)
         if cb_port: cb_port.currentIndexChanged.connect(_refresh_label)
         if cb_baud: cb_baud.currentIndexChanged.connect(_refresh_label)
 
     def set_port_status(self, state: str, port: str = None, baudrate: int | str = None):
         """
         state: 'disconnected' | 'connecting' | 'connected' | 'selected'
+        อัปเดตทั้งแบนเนอร์ใหญ่ (self.port_status_banner) และป้ายเล็ก (ถ้ามี)
         """
         text = "🔴 Not connected"
         style = """
@@ -301,19 +312,24 @@ class SimInfoWindow(QMainWindow):
         if hasattr(self, "port_status_banner") and self.port_status_banner is not None:
             self.port_status_banner.setText(text)
             self.port_status_banner.setStyleSheet(style)
+
+        if hasattr(self, "port_status_label") and self.port_status_label is not None:
+            self.port_status_label.setText(text)
+            self.port_status_label.setStyleSheet(style)
     
     def on_serial_connected(self, port: str, baudrate: int):
         self.set_port_status('connected', port, baudrate)
         try:
-            # จำการเชื่อมต่อล่าสุดไว้
             self.settings_manager.update_last_connection(port, str(baudrate))
         except Exception:
             pass
-        self.update_at_result_display(f"[PORT] ✅ Connected to {port} @ {baudrate}")
+        if hasattr(self, 'update_at_result_display'):
+            self.update_at_result_display(f"[PORT] ✅ Connected to {port} @ {baudrate}")
 
     def on_serial_disconnected(self):
         self.set_port_status('disconnected')
-        self.update_at_result_display("[PORT] 🔌 Disconnected")
+        if hasattr(self, 'update_at_result_display'):
+            self.update_at_result_display("[PORT] 🔌 Disconnected")
     
     def create_control_buttons(self, layout):
         """สร้างปุ่มควบคุมต่างๆ - Updated version with improved Signal Quality button"""
@@ -981,9 +997,65 @@ class SimInfoWindow(QMainWindow):
 
     # ==================== 4. PORT & CONNECTION MANAGEMENT ====================
     def refresh_ports(self):
-        """รีเฟรชรายการพอร์ต Serial"""
-        self.port_manager.refresh_ports(self.port_combo)
-        self.reload_sim_with_progress()
+        try:
+            # 1) หยุดเธรดเดิมเสมอ เพื่อไม่ให้สถานะค้างว่า Connected
+            if hasattr(self, "serial_connection_manager"):
+                self.serial_connection_manager.stop_serial_monitor()
+            else:
+                # fallback ปิดตรง ๆ ถ้ามีตัวแปรเธรด
+                t = getattr(self, "serial_thread", None)
+                if t:
+                    try:
+                        t.stop()
+                        t.wait(2000)
+                    except Exception:
+                        pass
+                    self.serial_thread = None
+
+            # 2) ให้ PortManager เติมรายชื่อพอร์ตลง combobox
+            ports = []
+            if hasattr(self, "port_manager") and self.port_manager:
+                ports = self.port_manager.refresh_ports(self.port_combo) or []
+            else:
+                # ถ้ายังไม่มี port_manager ให้กันพัง (optional)
+                from serial.tools import list_ports
+                self.port_combo.clear()
+                for p in list_ports.comports():
+                    self.port_combo.addItem(p.description or p.device, p.device)
+                    ports.append(p.device)
+                if not ports:
+                    self.port_combo.addItem("Device not found", "Device not found")
+
+            # 3) อัปเดตแบนเนอร์ตามผลลัพธ์
+            if not ports:
+                # ไม่พบพอร์ต -> Not connected
+                self.set_port_status("disconnected")
+            else:
+                # พบพอร์ต แต่ยังไม่ได้เชื่อมต่อ -> Selected
+                cur_port = self.port_combo.currentData() or self.port_combo.currentText()
+                baud = self.baud_combo.currentText() if hasattr(self, "baud_combo") else "-"
+                self.set_port_status("selected", cur_port, baud)
+
+            # (ถ้าคุณมีการโหลดข้อมูล SIM ต่อจาก refresh ให้คงบรรทัดนี้)
+            try:
+                self.reload_sim_with_progress()
+            except Exception:
+                pass
+
+            # แจ้งในหน้าต่าง Response
+            try:
+                self.update_at_result_display("[REFRESH] Refreshing serial ports...")
+                self.update_at_result_display(f"[REFRESH] Found {len(ports)} serial ports")
+            except Exception:
+                pass
+
+        except Exception as e:
+            # ผิดพลาดใด ๆ -> กลับเป็น Not connected
+            self.set_port_status("disconnected")
+            try:
+                self.update_at_result_display(f"[REFRESH ERROR] {e}")
+            except Exception:
+                pass
     
     def reload_sim_with_progress(self):
         """โหลดข้อมูล SIM ใหม่พร้อมการแสดงสถานะ"""

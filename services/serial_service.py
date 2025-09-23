@@ -50,6 +50,9 @@ class SerialMonitorThread(QThread):
         # เพิ่มตัวแปรเก็บแหล่งที่มาของคำสั่ง
         self.command_source = None  # 'MANUAL', 'SIGNAL_QUALITY', 'BACKGROUND'
         self.command_source_queue = deque(maxlen=10)
+
+        connected_signal = pyqtSignal(str, int)   # (port, baud)
+        disconnected_signal = pyqtSignal()        # no args
         
     def set_command_source(self, source):
         """กำหนดแหล่งที่มาของคำสั่ง"""
@@ -57,82 +60,122 @@ class SerialMonitorThread(QThread):
         self.command_source_queue.append(source)
 
     def run(self):
-        """Main thread loop"""
+        """เปิดพอร์ต, loop อ่าน, และเดินคิวกู้ซิมทุก ๆ รอบ"""
         self.running = True
         try:
             self.serial_conn = serial.Serial(self.port, self.baudrate, timeout=1)
             self.at_response_signal.emit(f"[SETUP] Connected to {self.port} at {self.baudrate} baud.")
             self.connected_signal.emit(self.port, self.baudrate)
 
+            # เคลียร์บัฟเฟอร์ SMS แบบ 2 บรรทัด
+            self.cmt_buffer = None
+
+            # ตัวคิว/แฟล็กที่อาจยังไม่ถูกตั้งจากภายนอก
+            if not hasattr(self, "recovery_active"):
+                self.recovery_active = False
+            if not hasattr(self, "command_source_queue"):
+                from collections import deque
+                self.command_source_queue = deque()
+
             while self.running:
+                # ── เดินคิวกู้ซิมทุก ๆ รอบ ──────────────────────────────
+                try:
+                    self.process_recovery_queue()
+                except Exception as e:
+                    # กันพังเงียบ ๆ เพื่อไม่ให้ loop หลุด
+                    self.at_response_signal.emit(f"[RECOVERY LOOP ERROR] {e}")
+
+                # ── อ่านข้อมูลจากพอร์ต ─────────────────────────────────
                 if self.serial_conn and self.serial_conn.in_waiting:
                     try:
-                        line = self.serial_conn.readline().decode(errors='ignore').strip()
+                        line = self.serial_conn.readline().decode(errors="ignore").strip()
                         if line:
                             self.process_received_line(line)
                     except Exception as e:
-                        self.at_response_signal.emit(f"[READ ERROR] {str(e)}")
-                
-                # ประมวลผล recovery queue
-                self.process_recovery_queue()
-                
+                        self.at_response_signal.emit(f"[READ ERROR] {e}")
+
                 time.sleep(0.1)
-                
+
         except serial.SerialException as e:
-            self.at_response_signal.emit(f"[FATAL] Cannot open port {self.port}: {str(e)}")
+            self.at_response_signal.emit(f"[FATAL] Cannot open port {self.port}: {e}")
         except Exception as e:
-            self.at_response_signal.emit(f"[ERROR] {str(e)}")
+            self.at_response_signal.emit(f"[ERROR] {e}")
         finally:
             if self.serial_conn:
                 try:
                     self.serial_conn.close()
-                except:
+                except Exception:
                     pass
                 self.serial_conn = None
-            #แจ้ง UI ว่าถูกตัดการเชื่อมต่อแล้ว (ไม่ว่าเหตุผลใด)
             self.disconnected_signal.emit()
     
-    def process_received_line(self, line):
-        """ประมวลผลข้อมูลที่รับมา - Fixed SMS 2-line processing"""
-        
-        # ตรวจสอบ CMTI (SMS notification)
-        if line.startswith("+CMTI:"):
+    def process_received_line(self, line: str):
+        """ประมวลผลข้อความที่อ่านได้จากพอร์ต"""
+        if not line:
+            return
+
+        up = line.upper().strip()
+
+        # ── จับ SMS แบบ notify ────────────────────────────────────────
+        if up.startswith("+CMTI:"):
+            # แจ้ง UI และจบ
             self.new_sms_signal.emit(line)
             self.at_response_signal.emit(line)
             return
-        
-        if line.startswith("+CMT:"):
+
+        # ── จับ SMS แบบ 2 บรรทัด (+CMT: header → บรรทัดถัดไปเป็น body) ─
+        if up.startswith("+CMT:"):
             self.cmt_buffer = line
-            # self.at_response_signal.emit(line)
             return
-        
-        elif self.cmt_buffer:
-            # บรรทัดนี้คือข้อความ SMS
+        elif getattr(self, "cmt_buffer", None):
             header = self.cmt_buffer
-            body = line
             self.cmt_buffer = None
-            
-            # ส่งรวมกันไป SMS handler
-            formatted_sms = f"{header}|{body}"
-            self.new_sms_signal.emit(formatted_sms)
-            # self.at_response_signal.emit(f"[SMS BODY] {body}")
+            body = line
+            self.new_sms_signal.emit(f"{header}|{body}")
             return
-        
-        # ตรวจสอบ SIM status responses
-        line_upper = line.upper().strip()
-        
-        if any(keyword in line_upper for keyword in ['NO SIM', 'SIM NOT INSERTED', 'SIM FAILURE']):
-            self.sim_failure_detected.emit()
-        elif '+CPIN:' in line_upper:
-            self.handle_cpin_response(line)
-        elif 'SMS READY' in line_upper or 'PB DONE' in line_upper:
-            self.sim_ready_signal.emit()
-        
-        # Recovery responses
-        if self.recovery_active and self.handle_recovery_response(line):
-            return
-        
-        # ส่วนอื่นๆ ไปหน้าหลัก
+
+        # ── จับสถานะซิมก่อน (สำคัญ) ─────────────────────────────────
+        if "+CPIN:" in up:
+            # ให้ handler ตัดสินว่ากู้สำเร็จหรือไม่ (READY → ปิด recovery + init SMS)
+            try:
+                self.handle_cpin_response(line)
+            finally:
+                # ไม่ปล่อยตกไปที่ at_response_signal ซ้ำ
+                return
+
+        # ── ซ่อน ERROR จร ๆ ระหว่าง recovery หรือคำสั่งพื้นหลัง ───────
+        if up == "ERROR":
+            if getattr(self, "recovery_active", False):
+                return
+            # ดูแหล่งที่มาของคำสั่งล่าสุด (ถ้ามีการบันทึก)
+            cmd_src = None
+            try:
+                if self.command_source_queue and isinstance(self.command_source_queue[-1], tuple):
+                    cmd_src = self.command_source_queue[-1][1]
+            except Exception:
+                cmd_src = None
+            if cmd_src in ("SIGNAL_QUALITY", "BACKGROUND"):
+                return
+
+        # ── แจ้ง SIM failure ชัดเจน ───────────────────────────────────
+        if any(k in up for k in ("NO SIM", "SIM NOT INSERTED", "SIM FAILURE")):
+            try:
+                self.sim_failure_detected.emit()
+            finally:
+                # แสดงบรรทัดไว้ด้วย เผื่อ debug
+                self.at_response_signal.emit(line)
+                return
+
+        # ── ระหว่าง recovery: ให้ handler ของ recovery ตัดสินใจ ──────
+        if getattr(self, "recovery_active", False):
+            try:
+                if self.handle_recovery_response(line):
+                    return  # ถูกจัดการแล้ว
+            except Exception:
+                # หาก handler โยน error ก็ให้ตกลงมาล็อกปกติ
+                pass
+
+        # ── บรรทัดอื่น ๆ แสดงปกติ ────────────────────────────────────
         self.at_response_signal.emit(line)
 
     def _is_signal_response(self, line):
@@ -189,84 +232,75 @@ class SerialMonitorThread(QThread):
         return True
     
     def process_recovery_queue(self):
-        """ประมวลผล recovery queue - ไม่แสดงข้อความเพิ่มเติม"""
-        if not self.recovery_active or len(self.recovery_queue) == 0:
+        """ดึงงานชุดถัดไปจากคิวแล้วส่ง AT ตามสเต็ป"""
+        if not getattr(self, "recovery_active", False):
             return
-        
-        # ดึงคำสั่งถัดไปจาก queue
-        command_info = self.recovery_queue.popleft()
-        command = command_info['command']
-        step = command_info['step']
-        delay = command_info.get('delay', 0)
-        
-        # รอตาม delay ที่กำหนด
+        if not getattr(self, "recovery_queue", None):
+            return
+        if not self.recovery_queue:
+            return
+
+        job = self.recovery_queue.popleft()
+        delay = int(job.get('delay', 0)) or 0
         if delay > 0:
             time.sleep(delay)
-        
-        # ส่งคำสั่งโดยไม่แสดงข้อความ
-        self.recovery_step = step
-        success = self.send_command_silent(command)  # ใช้ silent version
-        
-        if not success:
-            self._recovery_failed(f"Failed to send {command}")
+
+        self.recovery_step = int(job.get('step', 0))
+        ok = self.send_command_silent(job['command'])
+        if not ok:
+            self._recovery_failed(f"Failed to send {job['command']}")
     
-    def send_command_silent(self, command):
-        """ส่งคำสั่ง AT แบบเงียบ - ไม่แสดง [SENT]"""
-        if self.serial_conn and self.running:
-            try:
-                cmd_bytes = f"{command}\r\n".encode()
-                self.serial_conn.write(cmd_bytes)
+    def send_command_silent(self, command: str) -> bool:
+        """ส่ง AT โดยไม่สแปมขึ้นหน้าจอ (ใช้สำหรับ recovery)"""
+        try:
+            if self.serial_conn and self.serial_conn.is_open:
+                self.serial_conn.write(f"{command}\r\n".encode())
                 self.serial_conn.flush()
                 return True
-            except Exception as e:
-                self.at_response_signal.emit(f"[SEND ERROR] {e}")
-                return False
-        else:
-            return False
+        except Exception as e:
+            self.at_response_signal.emit(f"[SEND ERROR] {e}")
+        return False
     
-    def handle_cpin_response(self, line):
-        """จัดการ CPIN response - แสดงเฉพาะผลลัพธ์"""
-        
-        if "CPIN: READY" in line.upper():
-            self.stop_cpin_polling()
-            
-            # ถ้าอยู่ในโหมด recovery
-            if self.recovery_active:
-                self.recovery_active = False
-                self.recovery_queue.clear()
-                self.recovery_step = 0
-                self.recovery_completed_steps.clear()
-                self.at_response_signal.emit("[RECOVERY] Complete - SIM is ready!")
-            else:
-                self.at_response_signal.emit("[CPIN] SIM Ready")
-            
-            self.cpin_status_signal.emit("READY")
-            self.sim_ready_signal.emit()
-            self.cpin_ready_detected.emit()
-            
-        elif "CPIN: SIM PIN" in line.upper():
-            self.stop_cpin_polling()
-            
-            if self.recovery_active:
-                self.recovery_active = False
-                self.recovery_queue.clear()
-                self.recovery_step = 0
-                self.recovery_completed_steps.clear()
-                self.at_response_signal.emit("[RECOVERY] Failed - PIN required")
-            
+    def handle_cpin_response(self, line: str):
+        u = line.upper()
+        if "CPIN: READY" in u:
+            # ปิดโหมด recovery แล้วประกาศสำเร็จ
+            self.recovery_active = False
+            self.recovery_queue.clear()
+            self.recovery_step = 0
+            self.recovery_completed_steps.clear()
+            self.at_response_signal.emit("[RECOVERY] ✅ Complete - SIM is ready!")
+
+            # แจ้งสัญญาณให้ UI และ init SMS stack (ถ้ามี)
+            try:
+                self.cpin_status_signal.emit("READY")
+                self.sim_ready_signal.emit()
+                self.cpin_ready_detected.emit()
+            except Exception:
+                pass
+            try:
+                # ถ้ามีเมธอดนี้ ให้ตั้ง CSCS/CMGF/CPMS/CNMI ต่อ
+                self.init_sms_stack_safe()
+            except Exception:
+                pass
+            return
+
+        if "CPIN: SIM PIN" in u:
+            self.recovery_active = False
+            self.recovery_queue.clear()
+            self.at_response_signal.emit("[RECOVERY] ❌ Failed - SIM PIN required")
             self.cpin_status_signal.emit("PIN_REQUIRED")
-            
-        elif "CPIN: SIM PUK" in line.upper():
-            self.stop_cpin_polling()
-            
-            if self.recovery_active:
-                self.recovery_active = False
-                self.recovery_queue.clear()
-                self.recovery_step = 0
-                self.recovery_completed_steps.clear()
-                self.at_response_signal.emit("[RECOVERY] Failed - PUK required")
-            
+            return
+
+        if "CPIN: SIM PUK" in u:
+            self.recovery_active = False
+            self.recovery_queue.clear()
+            self.at_response_signal.emit("[RECOVERY] ❌ Failed - SIM PUK required")
             self.cpin_status_signal.emit("PUK_REQUIRED")
+            return
+
+        # อย่างอื่น (NOT READY ฯลฯ) ก็แค่โชว์ไว้
+        self.at_response_signal.emit(line)
     
     def start_cpin_polling(self):
         """เริ่ม CPIN polling"""
@@ -297,10 +331,13 @@ class SerialMonitorThread(QThread):
             self.stop_cpin_polling()
     
     def stop_cpin_polling(self):
-        """หยุด CPIN polling"""
-        self.cpin_polling_active = False
-        if self.cpin_timer:
-            self.cpin_timer.stop()
+        """หยุดตัวจับเวลาถาม CPIN (ถ้าคุณเคยตั้ง QTimer ไว้)"""
+        try:
+            if getattr(self, "cpin_timer", None):
+                self.cpin_timer.stop()
+                self.cpin_timer = None
+        except Exception:
+            pass
     
     def process_sms_message(self, header, body):
         """ประมวลผล SMS message"""
@@ -315,37 +352,22 @@ class SerialMonitorThread(QThread):
             self.at_response_signal.emit(f"[SMS ERROR] {e}")
     
     def send_command(self, command):
-        """ส่งคำสั่ง AT พร้อมระบุแหล่งที่มา - Enhanced version"""
         if self.serial_conn and self.running:
             try:
-                cmd_bytes = f"{command}\r\n".encode()
-                self.serial_conn.write(cmd_bytes)
-                self.serial_conn.flush()
-                
-                # กำหนด source ตามประเภทคำสั่ง
+                self.serial_conn.write(f"{command}\r\n".encode()); self.serial_conn.flush()
+
+                # ตีความแหล่งที่มาอัตโนมัติ
                 if not self.command_source:
-                    background_commands = ["AT+CSQ", "AT+CESQ", "AT+COPS", "AT+CREG", "AT+CIMI", "AT+CCID", "AT+QCCID", "AT+CNUM"]
-                    if any(bg_cmd in command.upper() for bg_cmd in background_commands):
-                        self.command_source = 'SIGNAL_QUALITY'  # เปลี่ยนจาก BACKGROUND
-                    else:
-                        self.command_source = 'MANUAL'
-                
-                # บันทึก command กับ source
+                    bg = ["AT+CSQ", "AT+CESQ", "AT+COPS", "AT+CREG", "AT+CIMI", "AT+CCID", "AT+QCCID", "AT+CNUM"]
+                    self.command_source = "SIGNAL_QUALITY" if any(x in command.upper() for x in bg) else "MANUAL"
+
                 self.command_source_queue.append((command, self.command_source))
-                
-                # ส่ง signal ไปยังที่เหมาะสม
-                if self.command_source == 'MANUAL':
+
+                if self.command_source == "MANUAL":
                     self.at_response_signal.emit(f"[SENT] {command}")
-                elif self.command_source == 'SIGNAL_QUALITY':
-                    # ไม่ส่งไปหน้าหลัก เพราะจะแสดงใน Signal Quality window เอง
-                    pass
-                elif self.command_source == 'BACKGROUND':
-                    # ไม่แสดงเลย
-                    pass
-                
-                # รีเซ็ต source
+                # SIGNAL_QUALITY/BACKGROUND → ไม่ spam ไปหน้าหลัก
+
                 self.command_source = None
-                
                 return True
             except Exception as e:
                 self.at_response_signal.emit(f"[SEND ERROR] {e}")
@@ -365,34 +387,24 @@ class SerialMonitorThread(QThread):
         return False
     
     def force_sim_recovery(self):
-        """บังคับ SIM recovery - แสดงข้อความเริ่มต้นเท่านั้น"""
+        """เริ่ม SIM recovery: CFUN=0 -> CFUN=1 -> CPIN? แล้วรอผล"""
         self.at_response_signal.emit("[RECOVERY] Starting SIM recovery...")
-        
-        # ล้าง queue และ state เดิม
-        self.recovery_queue.clear()
-        self.recovery_completed_steps.clear()
+
+        # reset state
+        try:
+            self.recovery_queue.clear()
+        except Exception:
+            from collections import deque
+            self.recovery_queue = deque()
+        self.recovery_completed_steps = set()
         self.recovery_active = True
         self.recovery_step = 0
         self.stop_cpin_polling()
-        
-        # เพิ่มคำสั่งลง queue
-        self.recovery_queue.append({
-            'command': 'AT+CFUN=0',
-            'step': 1,
-            'delay': 0
-        })
-        
-        self.recovery_queue.append({
-            'command': 'AT+CFUN=1', 
-            'step': 2,
-            'delay': 2
-        })
-        
-        self.recovery_queue.append({
-            'command': 'AT+CPIN?',
-            'step': 3, 
-            'delay': 4
-        })
+
+        # เดิน 0 -> 1 -> 2 ตามสเต็ป
+        self.recovery_queue.append({'command': 'AT+CFUN=0', 'step': 1, 'delay': 0})
+        self.recovery_queue.append({'command': 'AT+CFUN=1', 'step': 2, 'delay': 2})
+        self.recovery_queue.append({'command': 'AT+CPIN?', 'step': 3, 'delay': 4})
     
     def _recovery_failed(self, reason):
         """จัดการเมื่อ recovery ล้มเหลว""" 
@@ -403,15 +415,18 @@ class SerialMonitorThread(QThread):
         self.at_response_signal.emit(f"[RECOVERY] ❌ Failed: {reason}")
     
     def stop(self):
-        """หยุดการทำงาน"""
+        """หยุดเธรดและทำความสะอาด"""
         self.running = False
-        self.stop_cpin_polling()
-        self.recovery_active = False
-        self.recovery_queue.clear()
-        self.recovery_completed_steps.clear()
-            
-        if self.isRunning():
-            self.wait(3000)
+        try:
+            if self.serial_conn:
+                try:
+                    self.serial_conn.close()
+                except:
+                    pass
+                self.serial_conn = None
+        finally:
+            if self.isRunning():
+                self.wait(3000)
     
     def cleanup(self):
         """ทำความสะอาด"""

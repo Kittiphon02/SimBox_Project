@@ -8,6 +8,8 @@ import time
 from core.utility_functions import list_serial_ports
 from services.sim_model import load_sim_data
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from services.serial_service import SerialMonitorThread
+from PyQt5.QtWidgets import QMessageBox
 
 
 class PortManager:
@@ -237,7 +239,7 @@ class SerialConnectionManager:
                     self.parent.update_at_result_display(f"[SETUP] ❌ Cannot connect to {port}: {e}")
                 return None
             
-            from services.serial_service import SerialMonitorThread
+            # from services.serial_service import SerialMonitorThread
             serial_thread = SerialMonitorThread(port, baudrate)
 
             # ✅ ต่อสำเร็จ / หลุดการเชื่อมต่อ
@@ -245,9 +247,6 @@ class SerialConnectionManager:
                 serial_thread.connected_signal.connect(self.parent.on_serial_connected, Qt.UniqueConnection)
             if hasattr(self.parent, 'on_serial_disconnected'):
                 serial_thread.disconnected_signal.connect(self.parent.on_serial_disconnected, Qt.UniqueConnection)
-            
-            # เชื่อมต่อ signals ใหม่ด้วย UniqueConnection เพื่อป้องกันการซ้ำ
-            from PyQt5.QtCore import Qt
             
             if hasattr(self.parent, 'on_new_sms_signal'):
                 serial_thread.new_sms_signal.connect(
@@ -302,7 +301,7 @@ class SerialConnectionManager:
                     self.parent.serial_thread = serial_thread
                 
                 # Auto-reset CFUN (รอให้ thread เริ่มก่อน)
-                from PyQt5.QtCore import QTimer
+                # from PyQt5.QtCore import QTimer
                 def delayed_cfun_reset():
                     if serial_thread and serial_thread.isRunning():
                         serial_thread.send_command("AT+CFUN=0")
@@ -365,7 +364,7 @@ class SimRecoveryManager:
         try:
             # ตรวจสอบ serial connection
             if not hasattr(self.parent, 'serial_thread') or not self.parent.serial_thread:
-                from PyQt5.QtWidgets import QMessageBox
+                # from PyQt5.QtWidgets import QMessageBox
                 QMessageBox.warning(
                     self.parent, 
                     "No Connection", 
@@ -375,7 +374,7 @@ class SimRecoveryManager:
             
             # ตรวจสอบว่า thread ยังทำงานอยู่
             if not self.parent.serial_thread.isRunning():
-                from PyQt5.QtWidgets import QMessageBox
+                # from PyQt5.QtWidgets import QMessageBox
                 QMessageBox.warning(
                     self.parent, 
                     "Connection Not Active", 
@@ -385,7 +384,7 @@ class SimRecoveryManager:
             
             # ตรวจสอบ recovery ที่กำลังดำเนินการ
             if getattr(self.parent, 'sim_recovery_in_progress', False):
-                from PyQt5.QtWidgets import QMessageBox
+                # from PyQt5.QtWidgets import QMessageBox
                 QMessageBox.information(
                     self.parent, "Recovery in Progress", 
                     "⏳ SIM recovery is already in progress.\n\nPlease wait for the current process to complete..."
@@ -393,7 +392,7 @@ class SimRecoveryManager:
                 return
             
             # ยืนยันการทำ recovery
-            from PyQt5.QtWidgets import QMessageBox
+            # from PyQt5.QtWidgets import QMessageBox
             reply = QMessageBox.question(
                 self.parent, 
                 'Manual SIM Recovery', 
@@ -457,7 +456,7 @@ class SimRecoveryManager:
                 success1 = self.parent.serial_thread.send_command("AT+CFUN=0")
                 
                 if success1:
-                    from PyQt5.QtCore import QTimer
+                    # from PyQt5.QtCore import QTimer
                     QTimer.singleShot(2000, lambda: self.parent.serial_thread.send_command("AT+CFUN=1"))
                     QTimer.singleShot(5000, lambda: self.parent.serial_thread.send_command("AT+CPIN?"))
                     

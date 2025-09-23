@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QWidget, QHBoxLayout, QLineEdit,
     QPushButton, QLabel, QComboBox, QGroupBox, QSizePolicy, QMessageBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QTextEdit, QFileDialog,
-    QDateEdit, QCheckBox, QFrame, QSpacerItem, QShortcut, QFileDialog
+    QDateEdit, QCheckBox, QFrame, QSpacerItem, QShortcut, QFileDialog, QAbstractItemView
 )
 from PyQt5.QtCore import Qt, QEvent, QDate, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QPalette, QColor, QKeySequence, QBrush
@@ -239,6 +239,42 @@ class SmsLogDialog(QDialog):
         if query:
             search_type = "เบอร์โทร" if is_phone_search else "ข้อความ"
             print(f"🔍 Search for {search_type} '{query}': Found {visible_count} results")
+
+    def quick_filter(self):
+        """กรองจากกล่องค้นหา: PHONE(คอลัมน์ 2) และ MESSAGE(คอลัมน์ 3)"""
+        # รองรับทั้งชื่อ txt_search และ search_input
+        search_box = getattr(self, "txt_search", None) or getattr(self, "search_input", None)
+        q = (search_box.text() if search_box else "").strip().lower()
+
+        visible = 0
+        for r in range(self.table.rowCount()):
+            # ข้ามแถว placeholder "ไม่มีข้อมูล" ให้ซ่อนเมื่อมีคำค้น
+            it0 = self.table.item(r, 0)
+            if it0 and "ไม่มีข้อมูล" in (it0.text() or ""):
+                self.table.setRowHidden(r, bool(q))
+                continue
+
+            phone = (self.table.item(r, 2).text() if self.table.item(r, 2) else "").lower()
+            msg   = (self.table.item(r, 3).text() if self.table.item(r, 3) else "").lower()
+
+            show = (q == "") or (q in phone) or (q in msg)
+            self.table.setRowHidden(r, not show)
+            if show:
+                visible += 1
+
+        # อัปเดตตัวเลขผลลัพธ์ (ถ้ามีเมธอดนี้อยู่)
+        try:
+            self.update_status_label(visible)
+        except Exception:
+            pass
+
+    def on_search_clicked(self):
+        self.quick_filter()
+
+    def on_clear_clicked(self):
+        if hasattr(self, "txt_search"):
+            self.txt_search.clear()
+        self.quick_filter()
 
     def _is_phone_number_query(self, query):
         """ตรวจสอบว่าคำค้นหาเป็นเบอร์โทรหรือไม่ - Enhanced Version"""
@@ -600,6 +636,10 @@ class SmsLogDialog(QDialog):
     def create_maximized_table_section(self):
         """สร้าง table section ที่ใหญ่ที่สุด - ปรับขนาดคอลัมน์"""
         self.table = QTableWidget(0, 4)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.MultiSelection)   # คลิก = toggle, ไม่ล้างตัวเดิม
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)    # กันเข้าโหมดแก้ไขแล้วสีหาย
+
         self.table.setHorizontalHeaderLabels(['📅 DATE', '🕐 TIME', '📱 PHONE', '💬 MESSAGE'])
         
         header = self.table.horizontalHeader()
@@ -611,7 +651,7 @@ class SmsLogDialog(QDialog):
         self.table.setColumnWidth(2, 130)  # เพิ่มความกว้างเป็น 130px
         
         header.setSectionResizeMode(3, QHeaderView.Stretch)  # ข้อความ (ขยายเต็ม)
-        
+
         self.table.setMinimumHeight(500)
         self.table.verticalHeader().setDefaultSectionSize(45)
         self.table.cellDoubleClicked.connect(self.handle_row_double_clicked)
@@ -809,13 +849,7 @@ class SmsLogDialog(QDialog):
             it_phone = QTableWidgetItem(phone)
             it_msg   = QTableWidgetItem(msg)
 
-            # ✅ ทำรายการที่เป็น Fail ให้เป็นสีแดง
-            try:
-                is_fail = _is_fail_row(r)   # ถ้ามี helper ตามที่เพิ่มไว้
-            except NameError:
-                is_fail = int(r.get("is_failed", 0) or 0) == 1
-
-            if is_fail:
+            if getattr(self, "combo", None) and self.combo.currentIndex() == 2:
                 red_fg   = QBrush(QColor(220, 53, 69))
                 light_bg = QBrush(QColor(255, 235, 238))
                 for it in (it_date, it_time, it_phone, it_msg):
@@ -1052,94 +1086,106 @@ class SmsLogDialog(QDialog):
 
     # ==================== 6. TABLE DISPLAY ====================
     def display_filtered_data(self, data):
-        """แสดงข้อมูลที่กรองแล้วในตาราง - Updated สำหรับ SMS Fail"""
+        # เก็บ row_id ที่ถูกเลือกก่อนรีเฟรช
+        selected_ids = set()
+        try:
+            sm = self.table.selectionModel()
+            if sm is not None:
+                for mi in sm.selectedRows():
+                    it0 = self.table.item(mi.row(), 0)
+                    if it0 is not None:
+                        rid = it0.data(Qt.UserRole)
+                        if rid is not None:
+                            selected_ids.add(int(rid))
+        except Exception:
+            pass
+
         self.table.setRowCount(0)
-        
+        idx = self.combo.currentIndex()
+
+        # ───────────────────── ไม่มีข้อมูล ─────────────────────
         if not data:
             self.table.setRowCount(1)
-            
-            # เลือกข้อความที่เหมาะสมตามประเภท
-            idx = self.combo.currentIndex()
-            if idx == 2:  # SMS Fail
-                no_data_msg = "ยังไม่มี SMS ที่ส่งไม่สำเร็จ"
-                icon = "✅"
-            elif idx == 1:  # SMS Inbox
-                no_data_msg = "ยังไม่มีประวัติ SMS เข้า"
-                icon = "📥"
-            else:  # SMS Send
-                no_data_msg = "ยังไม่มีประวัติ SMS ส่งออก"
-                icon = "📤"
-            
+            if idx == 2:      # SMS Fail
+                no_data_msg, icon = "ยังไม่มี SMS ที่ส่งไม่สำเร็จ", "✅"
+            elif idx == 1:    # SMS Inbox
+                no_data_msg, icon = "ยังไม่มีประวัติ SMS เข้า", "📥"
+            else:             # SMS Send
+                no_data_msg, icon = "ยังไม่มีประวัติ SMS ส่งออก", "📤"
+
             self.table.setItem(0, 0, QTableWidgetItem(f"{icon} ไม่มีข้อมูล"))
             self.table.setItem(0, 1, QTableWidgetItem(""))
             self.table.setItem(0, 2, QTableWidgetItem(""))
             self.table.setItem(0, 3, QTableWidgetItem(no_data_msg))
-            
-            # จัดให้ข้อความอยู่กลาง
+
             for col in range(4):
-                item = self.table.item(0, col)
-                if item:
-                    item.setTextAlignment(Qt.AlignCenter)
-                    
-                    # ใช้สีต่างกันตามประเภท
-                    if idx == 2:  # SMS Fail
-                        item.setForeground(QColor(46, 204, 113))  # เขียว - ดีที่ไม่มี error
-                    else:
-                        item.setForeground(QColor(127, 140, 141))  # เทา - ปกติ
+                it = self.table.item(0, col)
+                if it:
+                    it.setTextAlignment(Qt.AlignCenter)
+                    it.setForeground(QColor(46, 204, 113) if idx == 2 else QColor(127, 140, 141))
             return
-            
+
+        # ───────────────────── มีข้อมูล ─────────────────────
+        make_fail_red = (idx == 2)
+
         for row_idx, item in enumerate(data):
             self.table.insertRow(row_idx)
-            
-            # วันที่
-            date_item = QTableWidgetItem(item['date'])
+
+            # DATE
+            date_item = QTableWidgetItem(item.get("date", ""))
             date_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row_idx, 0, date_item)
-            
-            # เวลา
-            time_item = QTableWidgetItem(item['time'])
+
+            # TIME
+            time_item = QTableWidgetItem(item.get("time", ""))
             time_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row_idx, 1, time_item)
-            
-            # เบอร์โทร
-            phone_display = item.get('phone') or "Unknown"
+
+            # PHONE
+            phone_display = item.get("phone") or "Unknown"
             phone_item = QTableWidgetItem(phone_display)
             phone_item.setTextAlignment(Qt.AlignCenter)
             phone_item.setToolTip(phone_display)
             self.table.setItem(row_idx, 2, phone_item)
-            
-            # ข้อความ
-            message_text = item['message']
-            
-            message_item = QTableWidgetItem(message_text)
+
+            # MESSAGE
+            message_item = QTableWidgetItem(item.get("message", ""))
             message_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            
-            # ใช้สีต่างกันสำหรับ SMS Fail
-            if self.combo.currentIndex() == 2:
-                message_item.setForeground(QColor(231, 76, 60))  # แดง - error
-                phone_item.setForeground(QColor(231, 76, 60))
-            
             self.table.setItem(row_idx, 3, message_item)
 
-            # ฝัง row_id ลงใน cell (สำหรับลบ)
+            # ---- ทำสีสำหรับแถว Fail (ให้ครบทั้ง 4 คอลัมน์) ----
+            if make_fail_red:
+                red_fg   = QColor(231, 76, 60)
+                light_bg = QColor(253, 237, 238)
+                for it in (date_item, time_item, phone_item, message_item):
+                    it.setForeground(red_fg)
+                    it.setBackground(light_bg)
+
+            # ฝัง row_id (ไว้ใช้คืน selection และคำสั่งลบ)
             row_id = item.get("row_id")
             if row_id is not None:
                 for col in range(4):
                     cell_item = self.table.item(row_idx, col)
                     if cell_item:
                         cell_item.setData(Qt.UserRole, int(row_id))
-            
-            # เพิ่มสีสันให้แถว
-            if row_idx % 2 == 0:
-                # ตั้งค่า background color สำหรับแถวที่เป็นเลขคู่
-                bg_color = QColor(248, 249, 250)  # ปกติ
-                if self.combo.currentIndex() == 2:  # SMS Fail
-                    bg_color = QColor(253, 237, 238)  # แดงอ่อน
-                    
+
+            # คืน selection ถ้า row นี้เคยถูกเลือกไว้
+            if row_id is not None and int(row_id) in selected_ids:
+                self.table.selectRow(row_idx)
+
+            # สลับสีพื้นหลังแถวปกติ (ถ้าไม่ใช่ Fail)
+            if not make_fail_red and (row_idx % 2 == 0):
+                bg = QColor(248, 249, 250)
                 for col in range(4):
                     cell_item = self.table.item(row_idx, col)
                     if cell_item:
-                        cell_item.setBackground(bg_color)
+                        cell_item.setBackground(bg)
+            
+            # ----- ท้ายฟังก์ชันแสดงตาราง -----
+            # ถ้ายังมีคำค้นอยู่ ให้กรองซ้ำอัตโนมัติ (กันอาการเด้งโชว์ทั้งหมด)
+            search_box = getattr(self, "txt_search", None) or getattr(self, "search_input", None)
+            if search_box and search_box.text().strip():
+                self.quick_filter()
 
     # ==================== 7. EVENT HANDLERS ====================
     def handle_row_double_clicked(self, row, col):
@@ -1163,11 +1209,6 @@ class SmsLogDialog(QDialog):
         self.accept()
     
     def on_delete_clicked(self):
-        """
-        ลบประวัติ SMS:
-        - ถ้าเลือกหลายแถว → ลบเฉพาะแถวที่เลือก
-        - ถ้าไม่ได้เลือก → ถามว่าจะลบทั้งแท็บนี้ไหม (Send/Inbox/Fail)
-        """
         try:
             from services.sms_log import delete_selected, delete_all, vacuum_db
         except Exception as e:
@@ -1179,55 +1220,74 @@ class SmsLogDialog(QDialog):
         view = {0: "send", 1: "inbox", 2: "fail"}.get(idx, "send")
         direction = "inbox" if view == "inbox" else "sent"
 
-        # ดึง id ของแถวที่เลือก
-        sel_rows = sorted({mi.row() for mi in self.table.selectionModel().selectedRows()})
+        # id ที่ถูกเลือก
+        sel = self.table.selectionModel()
+        sel_rows = sorted({mi.row() for mi in sel.selectedRows()}) if sel else []
         chosen_ids = []
         for r in sel_rows:
-            it = self.table.item(r, 0)
-            if it:
-                rid = it.data(Qt.UserRole)
+            it0 = self.table.item(r, 0)
+            if it0:
+                rid = it0.data(Qt.UserRole)
                 if rid is not None:
                     chosen_ids.append(int(rid))
 
-        # ไม่มีการเลือก → ถามว่าจะลบทั้งหมดในแท็บนี้ไหม
+        # กรณีไม่ได้เลือกอะไร → ลบทั้งแท็บ
         if not chosen_ids:
-            # Fail = ลบเฉพาะ fail ในตาราง sent
-            only_failed = (view == "fail")
-            label_map = {"send": "ประวัติ SMS ส่งออกทั้งหมด",
-                        "inbox": "ประวัติ SMS เข้า",
-                        "fail": "ประวัติ SMS ที่ส่งไม่สำเร็จ"}
+            only_failed = (view == "fail")  # ลบเฉพาะ fail ในตาราง sent
+            label_map = {
+                "send": "ประวัติ SMS ส่งออกทั้งหมด",
+                "inbox": "ประวัติ SMS เข้า",
+                "fail": "ประวัติ SMS ที่ส่งไม่สำเร็จ",
+            }
             msg = f"ต้องการลบ{label_map.get(view, 'ข้อมูลในหน้านี้')} ทั้งหมดหรือไม่?"
-            if QMessageBox.question(self, "Confirm Delete", msg,
-                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            if QMessageBox.question(
+                self, "Confirm Delete", msg, QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            ) != QMessageBox.Yes:
                 return
+
             try:
-                delete_all(direction=direction, only_failed=only_failed)
+                deleted = delete_all(direction=direction, only_failed=only_failed)
                 vacuum_db()
             except Exception as e:
                 QMessageBox.warning(self, "Delete Error", f"ลบไม่สำเร็จ: {e}")
                 return
+
+            # รีเฟรช & แจ้งผล
             self.load_log()
+            try:
+                n = int(deleted) if deleted is not None else None
+            except Exception:
+                n = None
+            if isinstance(n, int) and n >= 0:
+                QMessageBox.information(self, "ลบสำเร็จ", f"ลบ {n} รายการเรียบร้อยแล้ว")
+            else:
+                QMessageBox.information(self, "ลบสำเร็จ", "ลบรายการเรียบร้อยแล้ว")
             return
 
-        # มีการเลือก → ยืนยันลบเฉพาะรายการที่เลือก
+        # กรณีมีการเลือก → ลบเฉพาะที่เลือก
         if QMessageBox.question(
             self,
             "Confirm Delete",
             f"ต้องการลบ {len(chosen_ids)} รายการที่เลือกหรือไม่?",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.No,
         ) != QMessageBox.Yes:
             return
 
         try:
-            delete_selected(direction, chosen_ids)
+            deleted = delete_selected(direction, chosen_ids)
             vacuum_db()
         except Exception as e:
             QMessageBox.warning(self, "Delete Error", f"ลบไม่สำเร็จ: {e}")
             return
 
+        # รีเฟรช & แจ้งผล
         self.load_log()
-
+        try:
+            n = int(deleted) if deleted is not None else len(chosen_ids)
+        except Exception:
+            n = len(chosen_ids)
+        QMessageBox.information(self, "ลบสำเร็จ", f"ลบ {n} รายการเรียบร้อยแล้ว")
 
     # ==================== 8. EXPORT FUNCTIONS ====================
     def export_to_excel(self):
