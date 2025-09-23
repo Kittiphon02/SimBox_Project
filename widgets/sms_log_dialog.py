@@ -96,6 +96,12 @@ class SmsLogDialog(QDialog):
             return
         import os
         self._csv_path = get_csv_file_path()
+        # ✨ แปลงหัวตาราง dt → date,time อัตโนมัติ (ทำครั้งเดียวถ้ายังเป็นแบบเก่า)
+        try:
+            self._migrate_sim_csv_dt_to_date_time(self._csv_path)
+        except Exception:
+            pass
+        
         self._csv_mtime = os.path.getmtime(self._csv_path) if os.path.exists(self._csv_path) else None
         self._csv_timer = QTimer(self)
         self._csv_timer.setInterval(3000)  # 3 วิ
@@ -298,9 +304,6 @@ class SmsLogDialog(QDialog):
             print(f"🔍 Obvious phone pattern detected for: '{query}'")
             return True
         
-        # ตรวจสอบเงื่อนไข:
-        # 1. มีตัวเลขอย่างน้อย 3 ตัว
-        # 2. สัดส่วนตัวเลขต่อตัวอักษรทั้งหมดมากกว่า 70%
         if len(clean_query) >= 3:
             digit_ratio = len(clean_query) / len(query) if len(query) > 0 else 0
             
@@ -318,17 +321,7 @@ class SmsLogDialog(QDialog):
         return False
 
     def _generate_phone_variations(self, query):
-        """สร้างเบอร์โทรในรูปแบบต่างๆ สำหรับการค้นหา - Enhanced Version
-        
-        Args:
-            query (str): เบอร์ที่ต้องการค้นหา
-            
-        Returns:
-            list: รายการเบอร์ในรูปแบบต่างๆ
-        """
         variations = set()
-        
-        # ลบอักขระพิเศษทั้งหมด
         clean_digits = ''.join(filter(str.isdigit, query))
         
         if not clean_digits:
@@ -434,15 +427,6 @@ class SmsLogDialog(QDialog):
         return result
 
     def _match_phone_numbers(self, phone_in_table, search_variations):
-        """ตรวจสอบว่าเบอร์ในตารางตรงกับรูปแบบค้นหาหรือไม่ - Enhanced Version
-        
-        Args:
-            phone_in_table (str): เบอร์ในตารางที่ต้องการเช็ค
-            search_variations (list): รายการเบอร์ค้นหาในรูปแบบต่างๆ
-            
-        Returns:
-            bool: True ถ้าตรงกัน
-        """
         if not phone_in_table or not search_variations:
             return False
         
@@ -1008,12 +992,6 @@ class SmsLogDialog(QDialog):
             return dt_str, "", None
 
     def parse_inbox_datetime(self, dt_str):
-        """แปลงวันที่/เวลา SMS Inbox ให้ได้รูปแบบเดียวกับ SMS Send (DD/MM/YYYY, HH:MM:SS).
-
-        รองรับทั้ง:
-        - 'YYYY-MM-DD HH:MM:SS'  (ที่มาจากฐานข้อมูล)
-        - 'DD/MM/YY,HH:MM:SS+zz' (บางโมเด็มรายงานมาแบบนี้)
-        """
         s = (dt_str or "").strip()
 
         # 1) ลองฟอร์แมตแบบ DB ก่อน: YYYY-MM-DD HH:MM:SS
@@ -1049,6 +1027,44 @@ class SmsLogDialog(QDialog):
         except Exception:
             return s, "", None
 
+    def _split_dt_parts(self, s: str):
+        """รับสตริงวันเวลา แล้วคืน (date, time) แบบง่าย"""
+        s = (str(s or "").strip().replace("T", " ").replace("\u200b", ""))
+        if " " in s:
+            d, t = s.split(" ", 1)
+            return d.strip(), t.strip()
+        return s, ""
+
+    def _migrate_sim_csv_dt_to_date_time(self, path: str):
+        import os, csv
+        if not path or not os.path.exists(path):
+            return
+
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            try:
+                reader = csv.DictReader(f)
+                fields = reader.fieldnames or []
+            except Exception:
+                return
+
+            # ไม่มี 'dt' หรือมี date/time อยู่แล้ว → ไม่ต้องทำอะไร
+            if "dt" not in fields or ("date" in fields and "time" in fields):
+                return
+
+            rows = list(reader)
+
+        # แยก dt → date,time
+        for r in rows:
+            d, t = self._split_dt_parts(r.get("dt", ""))
+            r["date"], r["time"] = d, t
+            r.pop("dt", None)
+
+        new_fields = ["id", "date", "time", "direction", "phone", "message", "status"]
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=new_fields, extrasaction="ignore")
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k, "") for k in new_fields})
 
     # ==================== 5. DATA FILTERING & SORTING ====================
     def apply_sort_filter(self):

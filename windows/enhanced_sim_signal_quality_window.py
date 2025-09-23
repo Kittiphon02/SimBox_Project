@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QRect
 from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QPixmap, QPainter
 from widgets.signal_strength_widget import SignalStrengthWidget
+from styles.signal_quality_window_styles import get_stylesheet
 
 ENABLE_GRAPH_SCROLLING = True
 
@@ -114,7 +115,6 @@ class EnhancedSignalQualityThread(QThread):
         try:
             if not self.monitoring or not self.current_command:
                 return
-            
             response = response.strip()
             if not response:
                 return
@@ -299,21 +299,14 @@ class EnhancedSignalQualityThread(QThread):
         """คำนวณคุณภาพสัญญาณ"""
         if rssi == -999:
             return 0.0
-        
-        # คำนวณคะแนนจาก RSSI (0-100)
         rssi_score = max(0, min(100, (rssi + 113) * 100 / 62))
-        
-        # คำนวณคะแนนจาก BER (0-100)
         if ber < 99:
             ber_score = max(0, min(100, 100 - (ber * 10)))
         else:
             ber_score = 50  # ค่าเริ่มต้นถ้าไม่รู้
-        
-        # รวมคะแนน (70% RSSI, 30% BER)
         return (rssi_score * 0.7) + (ber_score * 0.3)
     
     def run(self):
-        """Main monitoring loop"""
         try:
             self.status_updated.emit("🟢 Connected - Loading SIM information...")
             
@@ -332,7 +325,6 @@ class EnhancedSignalQualityThread(QThread):
                         measurement.sim_info = self.sim_identity
                         self.signal_measured.emit(measurement)
                     else:
-                        # ถ้าวัดไม่ได้ ส่งค่าเริ่มต้น
                         default_measurement = SignalMeasurement(
                             timestamp=datetime.now().strftime("%H:%M:%S"),
                             rssi=-999,
@@ -344,7 +336,6 @@ class EnhancedSignalQualityThread(QThread):
                         default_measurement.sim_info = self.sim_identity
                         self.signal_measured.emit(default_measurement)
                     
-                    # รอ interval
                     for _ in range(self.interval * 10):
                         if not self.monitoring:
                             break
@@ -360,7 +351,6 @@ class EnhancedSignalQualityThread(QThread):
             self.status_updated.emit("🔴 Monitoring stopped")
     
     def _get_sim_identity(self) -> Optional[SIMIdentityInfo]:
-        """ดึงข้อมูล SIM identity"""
         try:
             sim_info = SIMIdentityInfo()
             
@@ -402,7 +392,6 @@ class EnhancedSignalQualityThread(QThread):
                         break
             
             self._validate_sim_info(sim_info)
-            
             return sim_info if sim_info.imsi else None
             
         except Exception as e:
@@ -506,7 +495,6 @@ class EnhancedSignalQualityThread(QThread):
         self.quit()
         self.wait()
 
-
 class EnhancedSIMSignalQualityWindow(QDialog):
     """Enhanced Signal Quality Window with SIM Information"""
     
@@ -558,8 +546,6 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         response_layout.addWidget(self.signal_response_display)
         signal_response_group.setLayout(response_layout)
         
-        # เพิ่มเข้าไปใน left panel ของ create_realtime_panel
-        # หาบรรทัดที่มี layout.addWidget(indicator_group) และเพิ่มหลังจากนั้น
         return signal_response_group
         
     def setup_ui(self):
@@ -987,19 +973,10 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         network_group.setLayout(network_layout)
         layout.addWidget(network_group)
         
-        # MCC/MNC Database Info
-        # database_group = QGroupBox("MCC/MNC Database")
-        # database_layout = QVBoxLayout()
-        
         self.database_text = QTextEdit()
         self.database_text.setReadOnly(True)
         self.database_text.setMaximumHeight(150)
         self.database_text.setFont(QFont("Courier New", 10))
-        # self.database_text.setText("MCC/MNC database information will be displayed here when SIM is detected...")
-        # database_layout.addWidget(self.database_text)
-        
-        # database_group.setLayout(database_layout)
-        # layout.addWidget(database_group)
         
         layout.addStretch()
         content.setLayout(layout)
@@ -1107,7 +1084,6 @@ class EnhancedSIMSignalQualityWindow(QDialog):
         self.distribution_text = QTextEdit()
         self.distribution_text.setReadOnly(True)
         self.distribution_text.setFont(QFont("Courier New", 11))
-        # self.distribution_text.setMaximumHeight(200)
         self.distribution_text.setMinimumHeight(360)
         self.distribution_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -1858,18 +1834,6 @@ Debug Info:
             return "#95a5a6"  # Gray
     
     def get_signal_grade(self, rssi: int) -> str:
-        # if rssi >= -70:
-        #     return "A+ (Excellent)"
-        # elif rssi >= -80:
-        #     return "B+ (Very Good)"
-        # elif rssi >= -90:
-        #     return "B (Good)"
-        # elif rssi >= -100:
-        #     return "C (Fair)"
-        # elif rssi >= -110:
-        #     return "D (Poor)"
-        # else:
-            # return "F (Very Poor)"
         return f"{rssi} dBm"
     
     def create_signal_bars_visual(self, bars: int) -> str:
@@ -1878,181 +1842,7 @@ Debug Info:
         return f"📶 {filled}{empty} ({bars}/5)"
     
     def apply_styles(self):
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #fdf2f2;
-                border: 2px solid #dc3545;
-                border-radius: 10px;
-            }
-            
-            QGroupBox {
-                font-size: 13px;
-                font-weight: 600;
-                color: #721c24;
-                border: 2px solid #dc3545;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding: 10px;
-                background-color: #fff5f5;
-            }
-            
-            QGroupBox:title {
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                padding: 0 8px;
-                color: #a91e2c;
-                font-weight: bold;
-            }
-            
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #dc3545, stop:1 #c82333);
-                color: white;
-                border: none;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #c82333, stop:1 #a71e2a);
-                border: 1px solid #a71e2a;
-            }
-            
-            QPushButton:pressed {
-                background: #dc3545;
-            }
-            
-            QPushButton:disabled {
-                background-color: #6c757d;
-                color: #adb5bd;
-            }
-            
-            QTabWidget::pane {
-                border: 2px solid #dc3545;
-                border-radius: 8px;
-                background-color: #fff5f5;
-            }
-            
-            QTabBar::tab {
-                background-color: #f8d7da;
-                color: #721c24;
-                padding: 6px 12px;
-                margin-right: 2px;
-                border: 1px solid #f5c6cb;
-                border-bottom: none;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-            }
-            
-            QTabBar::tab:selected {
-                background-color: #dc3545;
-                color: white;
-                font-weight: bold;
-            }
-            
-            QTabBar::tab:hover:!selected {
-                background-color: #f1b0b7;
-            }
-            
-            QTableWidget {
-                border: 1px solid #dc3545;
-                border-radius: 4px;
-                background-color: white;
-                gridline-color: #f5c6cb;
-                font-size: 10px;
-                selection-background-color: #f8d7da;
-            }
-            
-            QTableWidget::item {
-                padding: 4px 6px;
-                border-bottom: 1px solid #f5c6cb;
-                min-height: 20px;
-            }
-            
-            QTableWidget::item:selected {
-                background-color: #f8d7da;
-                color: #721c24;
-            }
-            
-            QHeaderView::section {
-                background-color: #dc3545;
-                color: white;
-                padding: 6px 8px;
-                border: 1px solid #c82333;
-                font-size: 10px;
-                font-weight: bold;
-                min-height: 25px;
-            }
-            
-            QTextEdit {
-                border: 1px solid #dc3545;
-                border-radius: 4px;
-                background-color: white;
-                color: #212529;
-                padding: 5px;
-            }
-            
-            QComboBox, QSpinBox {
-                border: 1px solid #dc3545;
-                border-radius: 4px;
-                padding: 2px 5px;
-                background-color: white;
-                min-width: 80px;
-            }
-            
-            QSlider::groove:horizontal {
-                border: 1px solid #dc3545;
-                height: 6px;
-                background: #f8d7da;
-                border-radius: 3px;
-            }
-            
-            QSlider::handle:horizontal {
-                background: #dc3545;
-                border: 1px solid #c82333;
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                margin: -5px 0;
-            }
-            
-            QSlider::sub-page:horizontal {
-                background: #dc3545;
-                border-radius: 3px;
-            }
-            
-            QCheckBox {
-                color: #721c24;
-                font-weight: 500;
-            }
-            
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                border: 1px solid #dc3545;
-                border-radius: 2px;
-                background-color: white;
-            }
-            
-            QCheckBox::indicator:checked {
-                background-color: #dc3545;
-                image: none;
-            }
-            
-            QSplitter::handle {
-                background-color: #dc3545;
-                width: 3px;
-                height: 3px;
-            }
-            
-            QScrollArea {
-                border: none;
-                background-color: transparent;
-            }
-        """)
+        self.setStyleSheet(get_stylesheet())
     
     def closeEvent(self, event):
         try:

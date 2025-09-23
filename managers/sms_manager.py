@@ -476,11 +476,6 @@ class SMSHandler:
             if hasattr(self.parent, 'update_at_result_display'):
                 self.parent.update_at_result_display(f"[LEGACY CMT ERROR] {e}")
 
-                # หลัง self._show_sms_notification(...) หรือหลัง update_at_result_display
-                # self.parent.incoming_sms_count += 1
-                # self.parent.lbl_msg_count.setText(f"Messages: {self.parent.incoming_sms_count}")
-
-    
     def _show_sms_notification(self, sender, message, timestamp):
         """แสดง notification SMS ใหม่"""
         if hasattr(self.parent, 'show_non_blocking_message'):
@@ -492,14 +487,8 @@ class SMSHandler:
     def _save_sms_to_inbox_log(self, sender, message, datetime_str):
         try:
             from services.sms_log import log_sms_inbox
-
-            # if hasattr(self.parent, 'update_at_result_display'):
-            #     self.parent.update_at_result_display(f"[LOG DEBUG] Saving SMS: {sender} -> {message[:30]}...")
-
             success = log_sms_inbox(sender, message, "รับเข้า (real-time)")
             if success:
-                # if hasattr(self.parent, 'update_at_result_display'):
-                #     self.parent.update_at_result_display(f"[LOG SUCCESS] SMS from {sender} saved to CSV successfully")
                 return True
             else:
                 return self._fallback_save_sms(sender, message, datetime_str)
@@ -513,14 +502,11 @@ class SMSHandler:
         try:
             from services.sms_log import log_sms_inbox
             log_sms_inbox(sender, message, "รับเข้า (fallback)")
-            # if hasattr(self.parent, 'update_at_result_display'):
-            #     self.parent.update_at_result_display('[LOG] Fallback saved to DB')
             return True
         except Exception as e:
             if hasattr(self.parent, 'update_at_result_display'):
                 self.parent.update_at_result_display(f"[LOG ERROR] Fallback failed: {e}")
             return False
-
 
 class SMSInboxManager:
     """จัดการ SMS inbox และการแสดงผล"""
@@ -681,15 +667,6 @@ class SMSLogReader:
 
     
     def export_sms_logs(self, sms_list, export_path):
-        """ส่งออก SMS logs เป็นไฟล์
-        
-        Args:
-            sms_list (list): รายการ SMS
-            export_path (str): path ที่ต้องการส่งออก
-            
-        Returns:
-            bool: True ถ้าส่งออกสำเร็จ
-        """
         try:
             if export_path.endswith('.csv'):
                 # Export เป็น CSV

@@ -323,15 +323,6 @@ class DialogManager:
                 self.open_dialogs.remove(dialog)
         except Exception as e:
             print(f"Error cleaning up dialog: {e}")
-    
-    # def on_sms_received(self, raw_signal: str, raw_log_line: str):
-    #     # 1) ดึงเบอร์ก่อน '|' → "+66653988461"
-    #     raw_phone = raw_signal.split("|", 1)[0].strip()
-    #     # 2) normalize ให้เป็น "0653988461"
-    #     sender = normalize_phone_number(raw_phone)
- 
-    #      # บันทึกลง CSV
-    #     log_sms_inbox(sender, message, status="รับเข้า (real-time)")
 
     def close_all_dialogs(self):
         """ปิด dialogs ทั้งหมด"""

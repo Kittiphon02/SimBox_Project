@@ -1,18 +1,12 @@
 # services/sms_log_store.py
 # ------------------------------------------------------------
-# บริการบันทึก/อ่าน LOG ของ SMS
-# - เขียนลง SQLite ตามเดิม (ถ้าต้องการ)
-# - และ "มิร์เรอร์" ลง CSV ข้าง .exe
-# - หน้า History สามารถสลับมาอ่านจาก CSV ได้
-# - CSV ไม่มีคอลัมน์ is_failed แล้ว → เวลาคืนค่าจาก CSV จะคำนวณ is_failed จาก status ให้
-# ------------------------------------------------------------
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Union, Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 
-# SQLite connection ใช้ตามเดิม (ไม่มี get_db_file_path แล้ว)
+# SQLite connection ใช้ตามเดิม
 from .db import get_conn
 
 # ---------- โหมด/พาธ CSV ----------
@@ -44,9 +38,20 @@ def _fmt_dt(dt: Optional[Union[datetime, str]]) -> str:
         return dt
     return (dt or _now()).strftime(ISO_FMT)
 
+def _split_to_date_time(when: str):
+    """แยก 'YYYY-MM-DD HH:MM:SS' → ('YYYY-MM-DD','HH:MM:SS')"""
+    s = str(when or "").strip().replace("T", " ")
+    if " " in s:
+        d, t = s.split(" ", 1)
+        return d.strip(), t.strip()
+    return s, ""
+
 def _mirror_csv(direction: str, phone: str, message: str, status: str, when: str) -> None:
+    """เขียน CSV แบบใหม่ (date,time แยกคอลัมน์)"""
     from .csv_store import append_row
-    append_row(_CSV_PATH, direction=direction, phone=phone, message=message, status=status, dt=when)
+    d, t = _split_to_date_time(when)
+    append_row(_CSV_PATH, direction=direction, phone=phone, message=message,
+               status=status, date=d, time=t)
 
 # ============================================================
 # Low-level INSERT helpers
@@ -64,7 +69,8 @@ def _insert_sent(
 
     # CSV only
     if USE_CSV_ONLY:
-        _mirror_csv("sent", phone or "Unknown", message or "", status or ("ล้มเหลว" if is_failed else "ส่งสำเร็จ"), when)
+        _mirror_csv("sent", phone or "Unknown", message or "",
+                    status or ("ล้มเหลว" if is_failed else "ส่งสำเร็จ"), when)
         return
 
     # SQLite ปกติ
@@ -182,10 +188,12 @@ def list_logs(
         rows = list_logs_csv(_CSV_PATH, direction=direction, phone=phone,
                              keyword=keyword, since=since, until=until,
                              limit=limit, offset=offset, order=order)
-        # เติมคีย์ is_failed (คำนวณจาก status) เพื่อความเข้ากันได้กับ UI เดิม
+        # เติมคีย์ dt และ is_failed เพื่อความเข้ากันได้กับ UI เดิม
         out: List[Dict[str, Any]] = []
         for r in rows:
             rr = dict(r)
+            if not rr.get("dt"):
+                rr["dt"] = f"{rr.get('date','')} {rr.get('time','')}".strip()
             rr["is_failed"] = 1 if looks_failed(rr.get("status") or "") else 0
             out.append(rr)
         return out

@@ -56,7 +56,6 @@ class SimInfoWindow(QMainWindow):
 
         # self.setup_enhanced_display_separation()
         if self.serial_thread and hasattr(self.serial_thread, 'at_response_signal'):
-            # self.serial_thread.at_response_signal.connect(self.update_at_result_display)
             self.serial_thread.new_sms_signal.connect(self.sms_handler.process_new_sms_signal)
 
     def setup_enhanced_display_separation(self):
@@ -86,8 +85,6 @@ class SimInfoWindow(QMainWindow):
     def _setup_enhanced_serial_connection(self):
         """ตั้งค่าการเชื่อมต่อ Serial แบบ Enhanced"""
         try:
-            # ❌ เดิม: ตัดทุก slot ออกหมด จน Monitor โดนตัดด้วย
-            # self.serial_thread.at_response_signal.disconnect()
 
             # ✅ ใหม่: ตัดเฉพาะ slot เดิมของ "หน้าหลัก" เท่านั้น
             self.serial_thread.at_response_signal.disconnect(self.update_at_result_display)
@@ -137,12 +134,8 @@ class SimInfoWindow(QMainWindow):
     def write_manual_response(self, text: str):
         self.write_manual_response(text)
 
-        # self.at_result_display.append(text)   # ช่อง Response ของหน้าหลัก
-
     def write_monitor_response(self, text: str):
         self.write_monitor_response(text)
-
-        # self.at_monitor_signal.emit(text)     # ส่งต่อไป SMS Monitor
 
     def init_managers(self):
         """เริ่มต้น manager classes ต่างๆ"""
@@ -150,7 +143,6 @@ class SimInfoWindow(QMainWindow):
         self.theme_manager = ThemeManager(self.settings_manager)
         self.at_command_manager = ATCommandManager(self)
         self.special_command_handler = SpecialCommandHandler(self)
-        # self.sms_manager = SMSManager(self)
         self.sms_handler = SMSHandler(self)
         self.sms_inbox_manager = SMSInboxManager(self)
         self.port_manager = PortManager(self)
@@ -410,32 +402,6 @@ class SimInfoWindow(QMainWindow):
             }
         """)
         layout.addWidget(self.btn_signal_quality)
-        
-        # # ปุ่ม Sync
-        # self.btn_sync = QPushButton("🔄 Sync")
-        # self.btn_sync.setFixedWidth(100)
-        # self.btn_sync.clicked.connect(self.sync_manager.manual_sync)
-        # self.btn_sync.setStyleSheet("""
-        #     QPushButton {
-        #         background-color: #3498db;
-        #         color: white;
-        #         border: none;
-        #         padding: 8px 16px;
-        #         border-radius: 4px;
-        #         font-weight: bold;
-        #     }
-        #     QPushButton:hover {
-        #         background-color: #2980b9;
-        #     }
-        #     QPushButton:pressed {
-        #         background-color: #21618c;
-        #     }
-        #     QPushButton:disabled {
-        #         background-color: #bdc3c7;
-        #         color: #7f8c8d;
-        #     }
-        # """)
-        # layout.addWidget(self.btn_sync)
         
         # SMS Inbox Badge Container (เหมือนเดิม)
         sms_container = QWidget()
