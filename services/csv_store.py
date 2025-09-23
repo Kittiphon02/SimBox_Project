@@ -3,13 +3,55 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import datetime
 from typing import Iterable, List, Dict, Any, Optional
-import csv
-import os
+import csv, os, re
 
 # ฟอร์แมตใหม่: แยก date / time
 CSV_FIELDS = ["id", "date", "time", "direction", "phone", "message", "status"]
 ISO = "%Y-%m-%d %H:%M:%S"
 
+def _normalize_phone_program(p: str) -> str:
+    """ให้เบอร์เป็นรูปแบบโปรแกรม: 0xxxxxxxxx (10 หลัก), ไม่มีขีด/เว้นวรรค"""
+    digits = re.sub(r"\D+", "", str(p or ""))
+    if digits.startswith("66"):
+        digits = "0" + digits[2:]
+    if len(digits) == 9 and not digits.startswith("0"):
+        digits = "0" + digits
+    return digits[:10] if len(digits) >= 10 else digits
+
+def _format_date_program(date_str: str) -> str:
+    """แปลง date ใด ๆ ให้เป็น DD/MM/YYYY"""
+    s = (date_str or "").strip()
+    if not s:
+        return ""
+    for pat in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            d = datetime.strptime(s, pat)
+            return d.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    return s
+
+def _join_to_iso(date_str: str, time_str: str) -> str:
+    """
+    รวม date(โปรแกรม) + time ให้เป็น ISO 'YYYY-MM-DD HH:MM:SS'
+    รองรับ time: HH:MM:SS / HH:MM / h:mm:ss AM/PM / h:mm AM/PM
+    """
+    dprog = _format_date_program(date_str)
+    t = (time_str or "").strip()
+    time_pats = ("%H:%M:%S", "%H:%M", "%I:%M:%S %p", "%I:%M %p")
+    for tp in time_pats:
+        try:
+            dd = datetime.strptime(dprog, "%d/%m/%Y")
+            tt = datetime.strptime(t or "00:00:00", tp).time()
+            return datetime.combine(dd.date(), tt).strftime(ISO)
+        except Exception:
+            continue
+    try:
+        dd = datetime.strptime(dprog, "%d/%m/%Y")
+        return datetime(dd.year, dd.month, dd.day, 0, 0, 0).strftime(ISO)
+    except Exception:
+        return f"{date_str} {time_str}".strip()
+    
 # ----------------------- Utilities -----------------------
 def looks_failed(status: str) -> bool:
     """บ่งชี้ว่าเป็นรายการส่งล้มเหลว (ใช้ตอนลบเฉพาะ Fail/แสดงสีแดง)"""
@@ -58,7 +100,7 @@ def _ensure_new_header(path: Path) -> None:
     # แปลงทุกแถวจาก dt → date,time
     for r in rows:
         d, t = _split_dt(r.get("dt", ""))
-        r["date"], r["time"] = d, t
+        r["date"], r["time"] = _format_date_program(d), t
         r.pop("dt", None)
 
     with path.open("w", newline="", encoding="utf-8-sig") as f:
@@ -82,27 +124,38 @@ def _next_id(path: Path) -> int:
 def append_row(path: Path, *, direction: str, phone: str, message: str,
                status: str, date: Optional[str] = None, time: Optional[str] = None,
                dt: Optional[str | datetime] = None) -> None:
-    """
-    เพิ่มแถวใหม่ (รองรับการส่ง dt มา—จะถูกแตกเป็น date/time ให้เอง)
-    """
+    
     _ensure_new_header(path)
 
     if (not date and not time) and dt:
         if isinstance(dt, datetime):
-            dt = dt.strftime(ISO)
-        date, time = _split_dt(dt)
+            date = dt.strftime("%d/%m/%Y")
+            time = dt.strftime("%H:%M:%S")
+        else:
+            s = str(dt).replace("T", " ")
+            try:
+                dobj = datetime.strptime(s[:19], ISO)
+                date = dobj.strftime("%d/%m/%Y")
+                time = dobj.strftime("%H:%M:%S")
+            except Exception:
+                if " " in s:
+                    dpart, tpart = s.split(" ", 1)
+                    date = _format_date_program(dpart)
+                    time = tpart.strip()
 
-    if not date or not time:
-        now = datetime.now()
-        date = date or now.strftime("%Y-%m-%d")
-        time = time or now.strftime("%H:%M:%S")
+    # normalize อีกครั้ง (กรณีส่ง date/time มาเอง)
+    date = _format_date_program(date or datetime.now().strftime("%Y-%m-%d"))
+    try:
+        time = datetime.strptime((time or "00:00:00"), "%H:%M:%S").strftime("%H:%M:%S")
+    except Exception:
+        time = "00:00:00"
 
     row = {
         "id": _next_id(path),
         "date": date,
         "time": time,
-        "direction": direction,  # 'sent' | 'inbox'
-        "phone": phone or "",
+        "direction": direction,                # 'sent' | 'inbox'
+        "phone": _normalize_phone_program(phone),
         "message": message or "",
         "status": status or "",
     }
@@ -119,19 +172,26 @@ def list_logs_csv(path: Path, *, direction: Optional[str] = None,
     if isinstance(since, datetime): since = since.strftime(ISO)
     if isinstance(until, datetime): until = until.strftime(ISO)
 
+    # ทำ query phone ให้เป็นรูปแบบโปรแกรม (ค้นหาแบบ contains ได้)
+    q_phone_norm = _normalize_phone_program(phone) if phone else None
+
     rows: List[Dict[str, Any]] = []
     with path.open("r", newline="", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
-            # ประกอบ dt กลับเพื่อใช้กรอง/เรียง
-            dt_str = f"{r.get('date','')} {r.get('time','')}".strip()
+            # normalize ตามรูปแบบโปรแกรมก่อน
+            r_date  = _format_date_program(r.get("date", ""))
+            r_time  = (r.get("time", "") or "").strip()
+            r_phone = _normalize_phone_program(r.get("phone", ""))
+
+            dt_str = _join_to_iso(r_date, r_time)
 
             if direction and r.get("direction") != direction:
                 continue
-            if phone and phone not in (r.get("phone") or ""):
+            if q_phone_norm and q_phone_norm not in r_phone:
                 continue
             if keyword:
-                blob = (r.get("message") or "") + "|" + (r.get("phone") or "") + "|" + (r.get("status") or "")
-                if keyword not in blob:
+                blob = (r.get("message") or "") + "|" + r_phone + "|" + (r.get("status") or "")
+                if (keyword or "").strip() not in blob:
                     continue
             if since and dt_str < since:
                 continue
@@ -139,7 +199,10 @@ def list_logs_csv(path: Path, *, direction: Optional[str] = None,
                 continue
 
             rr = dict(r)
-            rr["dt"] = dt_str  # แนบให้เผื่อโค้ดฝั่ง UI ใช้
+            rr["date"]  = r_date          # DD/MM/YYYY
+            rr["time"]  = r_time or "00:00:00"
+            rr["phone"] = r_phone         # 0xxxxxxxxx
+            rr["dt"]    = dt_str          # ISO (เผื่อโค้ด UI ใช้)
             rows.append(rr)
 
     rows.sort(key=lambda x: x.get("dt") or "", reverse=(str(order).upper() == "DESC"))
